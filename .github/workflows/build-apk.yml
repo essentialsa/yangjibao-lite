@@ -1,0 +1,51 @@
+# 每次推送到 main（或手动触发）后，自动打出 debug APK。
+#
+# 为什么是 debug 包而不是 release 包：release 签名需要作者的
+# keystore，fork 里没有；debug 包由 Gradle 自动生成调试签名，
+# 个人自用安装没有问题。注意 debug 包签名与作者发布的 release
+# 包不同，无法直接覆盖安装 —— 先在旧 App 里「导出数据」备份，
+# 卸载旧版再装新版，然后用「批量导入」把导出的 JSON 粘贴回来。
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle 8.7
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: "8.7"
+
+      - name: Apply bulk-import patch
+        # 本 fork 的批量导入改动以 patch 形式放在仓库根目录
+        # （机器人令牌无法直接推送 400KB+ 的单文件，见 README）。
+        run: git apply bulk-import.patch
+
+      - name: Concatenate web assets
+        run: python3 tool/concat.py
+
+      - name: Build debug APK
+        run: gradle assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: yjblite-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
