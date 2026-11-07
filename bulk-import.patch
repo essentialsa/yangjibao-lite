@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..c7b36bf 100644
+index 6f2bb42..a167a88 100644
 --- a/README.md
 +++ b/README.md
-@@ -70,10 +70,32 @@
+@@ -70,10 +70,67 @@
  **我的**
  - 主题：日间 / 夜间 / 跟随系统，顶栏一键切换
  - 运行日志、数据源自检、JSON 导出
@@ -28,15 +28,50 @@ index 6f2bb42..c7b36bf 100644
 +
 +也支持直接粘贴 JSON（数组，或本 App「导出数据」的 `{ holdings: [...] }` 格式），以及从 Markdown 表格直接复制过来的内容（表头、分隔行、千分位逗号自动处理）。不想复制粘贴也可以点「选择文件」，直接选一个 JSON 或文本文件。导入前会出预览表（新增 / 更新 / 错误原因），确认后才写盘；已在持仓里的代码按「更新」处理，不会重复加。没写基金名的行会按代码联网查一次名。
 +
++### 按持有收益导入（v1.1.3 新增）
++
++截图（养基宝/天天基金）给的是份额 + 持有收益，成本是四舍五入显示的（如 5.19），反推成本会丢精度。直接按收益导入更准：
++
++```
++018738 1464.57 +201.03 2026-04-14
++007227 16753.40 -50.20
++```
++
++- 文本行：第 3 列带 `+`/`-` 号的数字表示持有收益（负数恒为收益，成本不可能是负数）；不带符号的第 3 列仍是成本净值。
++- JSON：每只持仓可带 `gain` 字段（另接受 `profit`、`持有收益` 两个别名），有 `gain` 时优先于 `costNav`。
++- Markdown 表格：表头某列是「持有收益/累计收益/收益」就按收益解析，是「成本」就按成本解析；两列都有时收益优先。
++
++换算在确认导入前做：`成本净值 = 最新净值 − 持有收益 / 份额`，取数走 `navPairOf`（货币基金净值恒为 1，绝不用 lsjz 的 DWJZ 万份收益当净值）。预览里会同时显示录入的收益和换算出的成本，并注明「成本由收益换算（按最新净值）」；取不到最新净值的那行会标错、不导入，其余行正常导入。App 自身导出格式（含 `costNav`）的 round-trip 不变。
++
 +APK 由 GitHub Actions 自动打包（见 `.github/workflows/build-apk.yml`）：每次推送到 `main` 后，在仓库的 Actions 页面下载 `yjblite-debug` 产物即可。注意：debug 包签名与作者发布的 release 包不同，覆盖安装会被系统拒绝，需先在旧 App 里「导出数据」备份，再卸载旧版、装新版、进「批量导入」把导出的 JSON 粘贴回来。
 +
 +---
++
++## 收益分析（本 fork 新增，v1.1.3）
++
++点总资产卡进来的「历史总资产涨跌」页里多了一个「收益分析」区块：
++
++- **四组数**：今日收益、本月收益、本年累计收益、累计收益，每组都是金额（¥）+ 时间加权收益率（%），旁边标实际起止（比如「自 2026-04-14 起」），窗口盖不住的年份/月份不会假装算全。
++- **柱状图**：日 / 月 / 年三档切换。日是最近 30 个交易日的每日收益，月是窗口内各自然月之和，年是各自然年之和。涨红跌绿，和 App 其余地方一致。
++
++口径（和 TWR 曲线同一批逐日数据，不另起取数逻辑）：
++
++```
++日收益 = 当日市值变化 − 当日净流入 + 当日分红 + 货币基金当日收益
++```
++
++- 减掉净流入是关键：买入/加仓当天市值变大不算赚，卖出当天市值变小也不算亏。
++- 分红要加回来：分红当天净值被除息砸下去，不加回会把分红算成一天的亏损。现金分红和红利再投都按「每份分红 × 当日份额」加回（红利再投的份额在 App 里是静态的，不加回同样会虚亏）。
++- 货币基金按净值 1 计入市值（见上节），当日收益按「份额 / 10000 × 万份收益」算；万份收益是自然日口径，周末两天的收益在周一那根柱子里一并算进来。
++- 百分比是时间加权收益率：把区间内每日的 `收益 / 上一日市值` 连乘，剔除了中途加减仓的影响。直接用「收益 / 期初市值」会在年内有大额加仓时严重失真。
++
++窗口限制：收益分析用最近 **400 个交易日**（约一年半），曲线页的 20/60/120 日档位不影响它。持仓买入日早于窗口时，累计收益只从窗口起点算起，界面会标出来。只持有货币基金时没有净值日期、拼不出交易日序列，收益分析显示数据不足——这是原版曲线的同款限制，不是回归。
 +
  ## 预估是怎么算的
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..096ec47 100644
+index 58d696c..a882f14 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -45,11 +80,978 @@ index 58d696c..096ec47 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 4
-+        versionName = "1.1.2"
++        versionCode = 5
++        versionName = "1.1.3"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
+diff --git a/app/src/main/assets/index.html b/app/src/main/assets/index.html
+index c72eeee..6d5a899 100644
+--- a/app/src/main/assets/index.html
++++ b/app/src/main/assets/index.html
+@@ -3674,6 +3674,8 @@ const S = {
+   replay: {},     // code -> {score:{beta,r2}, at} 持仓回演结果，一天缓存
+   perfCurve: null,// 账户历史收益率曲线
+   perfDays: 60,   // 曲线区间
++  pnlStats: null, // 收益分析聚合结果（400 个交易日窗口的日收益序列）
++  pnlMode: 'day', // 收益分析柱状图档位：day | month | year
+   chartRange: 60, // 净值走势图区间（交易日）
+   klineScale: 5,  // K 线周期（分钟）
+   perfBusy: false,
+@@ -4186,12 +4188,35 @@ const api = {
+     const name = str('fS_name');
+     const last = trend.length ? trend[trend.length - 1] : null;
+ 
++    /*
++     * 货币基金每日万份收益序列：[[时间戳, 每万份收益], ...]。
++     * 货币基金没有净值曲线（trend 为空），但这份序列就是它每天
++     * 实打实赚的钱：当日收益 = 持有份额 / 10000 × 万份收益。
++     * 收益分析用它把货币基金的日收益补回来，否则货币基金在
++     * 日收益序列里永远是 0，累计收益会比资产页少一大截。
++     * 非货币基金没有这个序列，解析出来是空数组，不占地方。
++     */
++    const mic = arr('Data_millionCopiesIncome') || [];
++    const millionIncome = [];
++    for (const p of mic) {
++      if (!p || !isFinite(+p[0]) || !isFinite(+p[1])) continue;
++      millionIncome.push({
++        date: new Date(+p[0] + 8 * 3600e3).toISOString().slice(0, 10),
++        val: +p[1],
++      });
++    }
++    millionIncome.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
++
+     return {
+       code, name,
+       trend,
+       divs,
++      millionIncome,
+       latest: last,
+       type: fundType(name, trend),
++      // 货币基金才有每万份收益序列；非货币基金没有。
++      // 靠它认货币基金，不靠名字（“兴银现金添利A”就不含货币/宝）。
++      isMoney: t.indexOf('var Data_millionCopiesIncome = ') >= 0,
+       lagDays: last ? dayGap(last.date) : null,
+     };
+   },
+@@ -7103,6 +7128,23 @@ const FUND_TYPE_NAME = {
+   index: '指数', stock: '股票', mix: '混合',
+ };
+ 
++/**
++ * 是不是货币基金。
++ *
++ * 认定的优先级：pingzhongdata 里有每万份收益序列 > fundFull 的 type
++ * 判定 > 持仓名里的“货币/余额宝/收益宝”等字眼。
++ * 名字是最弱的信号，只在全量档案还没拉回来时兜底。
++ */
++function isMoneyFund(code) {
++  const full = S.full[code];
++  if (full && full.isMoney) return true;
++  if (full && full.type === 'money') return true;
++  const h = S.holdings.find(x => x.code === code)
++    || S.watch.find(x => x.code === code);
++  const name = (h && h.name) || (full && full.name) || '';
++  return /货币|理财|现金管理|余额宝|收益宝/.test(name);
++}
++
+ /**
+  * 计算一只持仓的真实盈亏，把分红算进去。
+  *
+@@ -7564,6 +7606,8 @@ function mergeNavIntoFull(code, list) {
+ 
+ /** 当前价格：优先实时估值，其次最新净值，最后成本 */
+ function priceOf(code, fallback) {
++  // 货币基金单位净值恒为 1，不走估值也不走预测。
++  if (isMoneyFund(code)) return 1;
+   const g = S.gz[code];
+   if (g && g.gsz) return g.gsz;
+   const q = S.nav[code];
+@@ -7594,6 +7638,13 @@ function navPairOf(code) {
+   const q = S.nav[code];
+   if (!q) return null;
+ 
++  // 货币基金：现价与上一日净值恒为 1。
++  // 东财 lsjz 接口把“万份收益”（约 0.2~0.35）填在 DWJZ 字段里，
++  // 直接当净值用会把市值算成份额 × 万份收益（只剩约 1/3），
++  // 收益栏出现 -65%~-77% 的假亏损。2026-11-07 实测：
++  // 000198 的 DWJZ 是 0.2187，9811.99 份算出来正好是截图上的 2145.88。
++  if (isMoneyFund(code)) return { curNav: 1, prevNav: 1, date: q.date, realized: true };
++
+   const full = S.full[code];
+   const trend = full && full.trend && full.trend.length ? full.trend : null;
+   const today = todayStr();
+@@ -10113,31 +10164,33 @@ function viewDiag() {
+   html += '</div>';
+   return html;
+ }
+-/* ---- 历史收益率（账户 vs 大盘） ---- */
++/** 'YYYY-MM-DD' 的下一天（按 UTC 日历算，不受手机时区影响） */
++function nextDayStr(ds) {
++  return new Date(Date.parse(ds + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
++}
+ 
+ /**
+- * 用当前持仓回溯账户净值曲线。
++ * 逐日重建「当日市值 + 当日净流入 + 当日分红 + 货币基金当日收益」。
+  *
+- * 算法：把每只基金的净值历史按持有份额加权加起来，
+- * 得到「如果一直持有现在这套组合，账户每天值多少钱」。
++ * 这是 TWR 曲线和收益分析共用的唯一取数逻辑，两处口径一致：
++ *   rows[i] = { date, mv, flow, div, inc }
++ *     mv   当日总市值（份额 × 当日净值，缺失用前值填充）
++ *     flow 当日净流入 = Σ(份额变化 × 当日净值)，买入为正、卖出为负
++ *     div  当日分红现金 = Σ(每份分红 × 当日份额)
++ *     inc  货币基金当日收益 = Σ(份额 / 10000 × 万份收益)
+  *
+- * 注意这是「当前组合的回溯」，不是真实成交记录——
+- * 中途加减仓会影响实际收益，但用来判断
+- * 「我选的这些基金跑赢大盘了吗」是完全够用的。
++ * 货币基金没有净值曲线（pingzhongdata 里只有每万份收益），
++ * 这里按 isMoneyFund 的规则把它当净值 1 算，和 navPairOf 的
++ * 修正保持一致；不补的话它在序列里市值永远是 0，买入那天
++ * 的净流入也被跳过。
+  *
+- * 归一化到 100 起，和沪深300 放在同一坐标系里比较。
+- * 不同基金净值日期不完全一致（QDII 会滞后两天），
+- * 统一按日期并集、缺失用前值填充，避免曲线断点。
++ * 返回截掉「还没持仓」的前缀后的 seq，不足 2 天返回 null。
+  */
+-async function buildPerfCurve(days) {
++function buildDailyRows(days) {
+   const N = days || 60;
+   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+   if (!hs.length) return null;
+ 
+-  // 基准：沪深300
+-  let bench = null;
+-  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
+-
+   // 收集所有出现过的日期，取最近 N 个交易日
+   const dateSet = Object.create(null);
+   for (const h of hs) {
+@@ -10153,17 +10206,37 @@ async function buildPerfCurve(days) {
+    * 份额不再是拿当前值一刀切，而是逐日还原：
+    *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
+    *   没流水 → 退化成「从起始日起一直持有现在的份额」
+-   * 起始日的取法：优先用户填的买入日，其次加入日期，
++   * 起始日的取法：优先流水第一天，其次用户填的买入日/加入日，
+    * 最后按成本价在净值曲线上反推一个大概的日子。
+    */
+   const funds = hs.map(h => {
+     const m = Object.create(null);
+     for (const t of S.full[h.code].trend) m[t.date] = t.nav;
++    const full = S.full[h.code];
++    /*
++     * 当日分红（每份派多少钱）：分红当天净值会被除息砸下去，
++     * 市值凭空少一块。现金分红的钱打到余额里、红利再投的份额
++     * 在 App 里是静态的不会自己变大，两者都得把这笔钱加回来，
++     * 否则分红日会被算成一天亏了分红那么多。和 holdCalc 只认
++     * kind==='div' 保持一致，拆分（split）不处理。
++     */
++    const divMap = Object.create(null);
++    if (full && full.divs) {
++      for (const dv of full.divs) {
++        if (dv.kind === 'div' && dv.date) divMap[dv.date] = (divMap[dv.date] || 0) + dv.per;
++      }
++    }
++    // 货币基金每日万份收益：日期 -> 每万份收益（见 fundFull）。
++    const incMap = Object.create(null);
++    if (full && full.millionIncome) {
++      for (const mi of full.millionIncome) incMap[mi.date] = mi.val;
++    }
+     const fixed = +h.shares || 0;
+-    const from = txLog.firstDate(h.code) || inferStartDate(h, S.full[h.code]);
++    const from = txLog.firstDate(h.code) || h.buyDate || h.addedAt
++      || inferStartDate(h, S.full[h.code]);
+     return {
+       code: h.code,
+-      m,
++      m, divMap, incMap,
+       from,
+       fixed,
+       shareAt(d) {
+@@ -10180,12 +10253,14 @@ async function buildPerfCurve(days) {
+   const rows = [];
+   const lastNav = Object.create(null);
+   let prevShares = null;
++  let prevDate = null;
+   for (const d of use) {
+     const shares = Object.create(null);
+     let mv = 0;
+     for (const f of funds) {
+       const nav = f.m[d];
+       if (nav != null) lastNav[f.code] = nav;
++      else if (lastNav[f.code] == null && isMoneyFund(f.code)) lastNav[f.code] = 1;
+       const sh = f.shareAt(d);
+       shares[f.code] = sh;
+       const px = lastNav[f.code];
+@@ -10202,15 +10277,79 @@ async function buildPerfCurve(days) {
+         if (ds) flow += px * ds;
+       }
+     }
+-    rows.push({ date: d, mv, flow });
++
++    // 当日分红现金（见 funds 里的 divMap 注释）。
++    let div = 0;
++    for (const f of funds) {
++      const per = f.divMap[d];
++      if (per) div += per * (shares[f.code] || 0);
++    }
++
++    /*
++     * 货币基金当日收益：份额 / 10000 × 万份收益。
++     * 行是交易日，万份收益是自然日：周末两天的收益在周一
++     * 一并算进来（从上一行日期之后到今天为止的所有自然日），
++     * 否则每周会固定漏掉两天。每天的份额按当天实际持有算
++     * （shareAt），周六买入的话，周六周日的收益不算——
++     * 那两天钱还没进去。
++     */
++    let inc = 0;
++    if (prevDate) {
++      for (const f of funds) {
++        if (!(shares[f.code] > 0)) continue;
++        let s = 0;
++        let cur = nextDayStr(prevDate);
++        while (cur <= d) {
++          const v = f.incMap[cur];
++          if (v != null) {
++            const shDay = f.shareAt(cur);
++            if (shDay) s += shDay / 10000 * v;
++          }
++          cur = nextDayStr(cur);
++        }
++        if (s) inc += s;
++      }
++    }
++
++    rows.push({ date: d, mv, flow, div, inc });
+     prevShares = shares;
++    prevDate = d;
+   }
+ 
+-  // 跳过「一只都还没买」的那几天，曲线从真正开始持仓那天算起
++  // 跳过「一只都还没买」的那几天，序列从真正开始持仓那天算起
+   let s0 = 0;
+   while (s0 < rows.length && !(rows[s0].mv > 0)) s0++;
+   const seq = rows.slice(s0);
+   if (seq.length < 2) return null;
++  return seq;
++}
++
++/* ---- 历史收益率（账户 vs 大盘） ---- */
++
++/**
++ * 用当前持仓回溯账户净值曲线。
++ *
++ * 算法：把每只基金的净值历史按持有份额加权加起来，
++ * 得到「如果一直持有现在这套组合，账户每天值多少钱」。
++ *
++ * 注意这是「当前组合的回溯」，不是真实成交记录——
++ * 中途加减仓会影响实际收益，但用来判断
++ * 「我选的这些基金跑赢大盘了吗」是完全够用的。
++ *
++ * 归一化到 100 起，和沪深300 放在同一坐标系里比较。
++ * 不同基金净值日期不完全一致（QDII 会滞后两天），
++ * 统一按日期并集、缺失用前值填充，避免曲线断点。
++ */
++async function buildPerfCurve(days) {
++  const N = days || 60;
++
++  // 基准：沪深300
++  let bench = null;
++  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
++
++  // 逐日市值 / 净流入与收益分析共用同一份 rows（见 buildDailyRows）
++  const seq = buildDailyRows(N);
++  if (!seq) return null;
+ 
+   /*
+    * 时间加权收益率（TWR）。
+@@ -10251,11 +10390,104 @@ async function buildPerfCurve(days) {
+     acctPct: acctLast - 100,
+     benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
+     startDate: seqDates[0],
+-    // 前几天因为「还没持仓」被砍掉了，界面据此说明区间为何比选定的短
+-    skipped: s0,
+   };
+ }
+ 
++/* ---- 收益分析：日收益聚合成今日 / 本月 / 本年 / 累计 ---- */
++
++/*
++ * 收益分析用的窗口：比曲线页的 20/60/120 日长得多，
++ * 否则「本年累计」永远算不满一年。
++ * 400 个交易日 ≈ 一年半，覆盖一个完整自然年还有富余；
++ * 再长的话 fundFull 的 trend 虽然没截断，但算起来也没必要。
++ * 窗口盖不住的年份/月份，界面按实际起止标注，不假装算全了。
++ */
++const PNL_DAYS = 400;
++
++/**
++ * 把逐日 rows 聚合成收益数字。
++ *
++ * 口径（和 TWR 曲线同一批 rows，不另起取数逻辑）：
++ *   pnl(t) = mv(t) − mv(t−1) − flow(t) + div(t) + inc(t)
++ * 减掉净流入是关键：买入/加仓当天市值变大不算赚，卖出当天
++ * 市值变小也不算亏。分红和货币基金收益是真金白银，加回来。
++ * seq[0] 没有上一日，无法算 pnl，从 seq[1] 起算。
++ *
++ * 百分比是时间加权（TWR）口径：把区间内每日的
++ * r(t) = pnl(t) / mv(t−1) 连乘起来，剔除了中途加减仓的影响，
++ * 和上面那条曲线的算法一致。直接用「收益 / 期初市值」会在
++ * 年内有大额加仓时严重失真（比如 8 月加了 6 万，分母却只
++ * 有 1 月初的 9 千）。
++ *
++ * 返回 null 表示数据不足（没持仓 / 天数不够 / 只有货币基金，
++ * 货币基金没有净值日期，拼不出交易日序列）。
++ */
++function aggregatePnl(seq) {
++  if (!seq || seq.length < 2) return null;
++
++  const daily = [];
++  for (let i = 1; i < seq.length; i++) {
++    daily.push({
++      date: seq[i].date,
++      pnl: seq[i].mv - seq[i - 1].mv - seq[i].flow
++        + (seq[i].div || 0) + (seq[i].inc || 0),
++      mv: seq[i].mv,
++    });
++  }
++  if (!daily.length) return null;
++
++  const sum = arr => arr.reduce((a, b) => a + b.pnl, 0);
++
++  // 区间 TWR：连乘每日 r(t)；某日上一日市值为 0 时跳过那天。
++  const twr = list => {
++    let acc = 1, n = 0;
++    for (const d of list) {
++      const idx = daily.indexOf(d);
++      const base = idx > 0 ? daily[idx - 1].mv : seq[0].mv;
++      if (!(base > 0)) continue;
++      acc *= (1 + d.pnl / base);
++      n++;
++    }
++    return n ? (acc - 1) * 100 : null;
++  };
++
++  const today = todayStr();
++  const ym = today.slice(0, 7);
++  const yr = today.slice(0, 4);
++  const inMonth = daily.filter(d => d.date.slice(0, 7) === ym);
++  const inYear = daily.filter(d => d.date.slice(0, 4) === yr);
++  const last = daily[daily.length - 1];
++
++  return {
++    daily,
++    windowStart: seq[0].date,
++    windowEnd: seq[seq.length - 1].date,
++    today: { pnl: last.pnl, pct: twr([last]), date: last.date },
++    month: {
++      pnl: sum(inMonth), pct: twr(inMonth),
++      label: ym, from: inMonth.length ? inMonth[0].date : null,
++    },
++    year: {
++      pnl: sum(inYear), pct: twr(inYear),
++      label: yr, from: inYear.length ? inYear[0].date : null,
++    },
++    total: {
++      pnl: sum(daily), pct: twr(daily),
++      from: seq[0].date,
++    },
++  };
++}
++
++/** 同步算收益分析（S.full 已在内存里，不用等网络） */
++function computePnlStats() {
++  try {
++    const seq = buildDailyRows(PNL_DAYS);
++    return aggregatePnl(seq);
++  } catch (e) {
++    return null;
++  }
++}
++
+ /**
+  * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
+  *
+@@ -10321,6 +10553,92 @@ function perfChart(curve) {
+     "</svg>";
+ }
+ 
++/**
++ * 收益柱状图（纯 SVG，不引图表库，风格和 perfChart 一致）。
++ *
++ * 三档：
++ *   day   最近 30 个交易日的每日收益
++ *   month 窗口内各自然月的收益之和
++ *   year  窗口内各自然年的收益之和
++ *
++ * 涨用 --up、跌用 --down，和 App 其余地方一样
++ * （A 股习惯红涨绿跌，别按美股的绿涨红跌画）。
++ * 柱子少（≤12 根）时每根都标金额；柱子多时只标最大和最小两根，
++ * 免得数字挤成一团。x 轴只标首、中、末三个刻度。
++ */
++function pnlBars(stats, mode) {
++  if (!stats || !stats.daily.length) {
++    return "<div class=\"empty\" style=\"padding:30px\">数据不足，暂无法生成收益图</div>";
++  }
++
++  let bars = null; // [{label, pnl}]
++  if (mode === 'month') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 7);
++      if (!map[k]) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    bars = order.map(k => ({ label: k.slice(5) + "月", pnl: map[k] }));
++  } else if (mode === 'year') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 4);
++      if (!map[k]) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    bars = order.map(k => ({ label: k + "年", pnl: map[k] }));
++  } else {
++    bars = stats.daily.slice(-30).map(d => ({ label: d.date.slice(5), pnl: d.pnl }));
++  }
++  if (!bars.length) return "<div class=\"empty\" style=\"padding:30px\">本档位暂无数据</div>";
++
++  const W = 320, H = 150, PADL = 6, PADT = 18, PADB = 18;
++  let lo = 0, hi = 0;
++  for (const b of bars) { if (b.pnl < lo) lo = b.pnl; if (b.pnl > hi) hi = b.pnl; }
++  if (hi - lo < 1e-9) { hi = 1; if (lo > 0) lo = 0; }
++  const pad = (hi - lo) * 0.08;
++  lo -= pad; hi += pad;
++  const y = v => PADT + (H - PADT - PADB) * ((hi - v) / (hi - lo));
++  const y0 = y(0);
++  const slot = (W - PADL * 2) / bars.length;
++  const bw = Math.max(2, slot * 0.62);
++
++  let maxI = 0, minI = 0;
++  bars.forEach((b, i) => {
++    if (b.pnl > bars[maxI].pnl) maxI = i;
++    if (b.pnl < bars[minI].pnl) minI = i;
++  });
++
++  let s = "<svg viewBox=\"0 0 " + W + " " + H + "\" preserveAspectRatio=\"none\" style=\"width:100%;height:" + H + "px;display:block\">";
++  s += "<line x1=\"" + PADL + "\" y1=\"" + y0.toFixed(1) + "\" x2=\"" + (W - PADL) + "\" y2=\"" + y0.toFixed(1) + "\" stroke=\"var(--line)\" stroke-width=\"1\"/>";
++  bars.forEach((b, i) => {
++    const cx = PADL + slot * i + slot / 2;
++    const yv = y(b.pnl);
++    const top = Math.min(yv, y0), h = Math.max(1, Math.abs(y0 - yv));
++    const col = b.pnl >= 0 ? "var(--up)" : "var(--down)";
++    s += "<rect x=\"" + (cx - bw / 2).toFixed(1) + "\" y=\"" + top.toFixed(1) + "\" width=\"" + bw.toFixed(1) + "\" height=\"" + h.toFixed(1) + "\" rx=\"1.5\" fill=\"" + col + "\"/>";
++    // 金额标注：柱子少时全标，多时只标最大 / 最小两根
++    if (bars.length <= 12 || i === maxI || i === minI) {
++      const ty = b.pnl >= 0 ? top - 4 : top + h + 10;
++      s += "<text x=\"" + cx.toFixed(1) + "\" y=\"" + ty.toFixed(1) + "\" font-size=\"8.5\" fill=\"var(--fg2)\" text-anchor=\"middle\">" + moneyTxt(b.pnl) + "</text>";
++    }
++  });
++  // x 轴刻度：首 / 中 / 末
++  const ticks = [0, Math.floor((bars.length - 1) / 2), bars.length - 1];
++  const seen = Object.create(null);
++  for (const i of ticks) {
++    if (seen[bars[i].label]) continue;
++    seen[bars[i].label] = 1;
++    const cx = PADL + slot * i + slot / 2;
++    s += "<text x=\"" + cx.toFixed(1) + "\" y=\"" + (H - 5) + "\" font-size=\"9\" fill=\"var(--dim)\" text-anchor=\"middle\">" + bars[i].label + "</text>";
++  }
++  s += "</svg>";
++  return s;
++}
++
+ /**
+  * 历史总资产涨跌页。
+  *
+@@ -10404,19 +10722,69 @@ function viewPerf() {
+     "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
+     "</div></div>";
+ 
++  // ---- 收益分析（本 fork 新增 v1.1.3）----
++  html += "<div class=\"pcard\" style=\"margin:10px 12px;padding:14px\">";
++  html += "<div style=\"font-size:var(--fs-md);font-weight:700\">收益分析</div>";
++  const ps = S.pnlStats;
++  if (S.perfBusy && !ps) {
++    html += "<div class=\"empty\" style=\"padding:24px 0\">正在回溯…</div>";
++  } else if (!ps) {
++    html += "<div class=\"empty\" style=\"padding:24px 0\">数据不足，暂无法分析收益</div>";
++  } else {
++    // 四组汇总：今日 / 本月 / 本年 / 累计，每组都标实际起止
++    const cells = [
++      { t: "今日收益", v: ps.today, sub: ps.today.date.slice(5) },
++      { t: "本月收益", v: ps.month, sub: ps.month.from ? "自 " + ps.month.from.slice(5) + " 起" : ps.month.label },
++      { t: "本年累计", v: ps.year, sub: ps.year.from ? "自 " + ps.year.from.slice(5) + " 起" : ps.year.label + "年" },
++      { t: "累计收益", v: ps.total, sub: "自 " + ps.total.from + " 起" },
++    ];
++    html += "<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;margin-top:12px\">";
++    for (const cell of cells) {
++      html += "<div style=\"text-align:center\">";
++      html += "<div style=\"font-size:var(--fs-xs);color:var(--dim)\">" + cell.t + "</div>";
++      html += "<div class=\"" + pctCls(cell.v.pnl) + "\" style=\"font-size:var(--fs-lg);font-weight:700;margin-top:2px\">" + moneyFull(cell.v.pnl) + "</div>";
++      html += "<div class=\"" + pctCls(cell.v.pct) + "\" style=\"font-size:var(--fs-xs);margin-top:1px\">" + pctTxt(cell.v.pct) + "</div>";
++      html += "<div style=\"font-size:var(--fs-xs);color:var(--dim);margin-top:1px\">" + cell.sub + "</div>";
++      html += "</div>";
++    }
++    html += "</div>";
++    // 柱状图档位：日 / 月 / 年
++    const mode = S.pnlMode || 'day';
++    html += "<div class=\"sectabs\" style=\"padding:12px 0 0\">";
++    for (const m of [['day', '日'], ['month', '月'], ['year', '年']]) {
++      html += "<button data-pnlmode=\"" + m[0] + "\" class=\"" + (mode === m[0] ? "on" : "") + "\" style=\"flex:1\">" + m[1] + "收益</button>";
++    }
++    html += "</div>";
++    html += "<div style=\"margin-top:4px\">" + pnlBars(ps, mode) + "</div>";
++    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
++      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
++      "百分比为时间加权收益率，剔除了加减仓的影响。<br>" +
++      "窗口：" + ps.windowStart + " 至 " + ps.windowEnd + "（近 " + PNL_DAYS + " 个交易日），" +
++      "窗口外的收益不计入。</div>";
++  }
++  html += "</div>";
++
+   // 逐只贡献
+   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+   if (hs.length) {
+     html += "<div class=\"colhead\"><div class=\"c0\">基金</div>" +
+       "<div class=\"c1\">占比</div><div class=\"c2\">" + days + "日</div></div>";
++    // 占比用「现价 × 份额」：货币基金的 S.nav 是万份收益（约 0.2），
++    // 不能直接当净值用，按净值 1 算，和 navPairOf 的修正一致。
++    const pxOf = h => isMoneyFund(h.code) ? 1
++      : (S.nav[h.code] ? S.nav[h.code].nav : 0);
+     let totVal = 0;
+-    for (const h of hs) totVal += (S.nav[h.code] ? S.nav[h.code].nav : 0) * h.shares;
++    for (const h of hs) totVal += pxOf(h) * h.shares;
+     for (const h of hs) {
+       const tr = S.full[h.code].trend;
+-      const cur = tr[tr.length - 1].nav;
+-      const from = tr[Math.max(0, tr.length - 1 - days)].nav;
+-      const pct = from ? (cur / from - 1) * 100 : 0;
+-      const val = (S.nav[h.code] ? S.nav[h.code].nav : cur) * h.shares;
++      // 货币基金没有净值曲线（trend 为空），直接读 tr[-1].nav 会抛错；
++      // 净值恒为 1，区间涨跌就是 0。
++      const money = isMoneyFund(h.code);
++      const cur = tr.length ? tr[tr.length - 1].nav : (money ? 1 : null);
++      const from = tr.length ? tr[Math.max(0, tr.length - 1 - days)].nav : (money ? 1 : null);
++      if (cur == null || !from) continue;
++      const pct = (cur / from - 1) * 100;
++      const val = pxOf(h) * h.shares;
+       const w = totVal ? val / totVal * 100 : 0;
+       html += "<div class=\"fund\">" +
+         "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
+@@ -10444,6 +10812,8 @@ async function loadPerf(days) {
+   } catch (e) {
+     S.perfCurve = null;
+   }
++  // 收益分析与曲线共用同一份 rows，同步算，不用等网络
++  S.pnlStats = computePnlStats();
+   S.perfBusy = false;
+   render();
+ }
+@@ -11704,6 +12074,7 @@ function viewSettings() {
+ 
+   html += setGroup("数据",
+     setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
++    + setRow("miBulkImport", "批量导入", "粘贴文本或 JSON，一次导入多只持仓")
+     + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
+       '<span style="color:var(--up)">清空</span>')
+   );
+@@ -12405,6 +12776,10 @@ function bindGlobal() {
+     const pd = e.target.closest('[data-perfd]');
+     if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
+ 
++    // 收益分析柱状图档位切换（数据已在内存里，不用重新加载）
++    const pm = e.target.closest('[data-pnlmode]');
++    if (pm) { S.pnlMode = pm.dataset.pnlmode; render(); return; }
++
+     // K 线周期切换
+     const kl = e.target.closest('[data-kline]');
+     if (kl) {
+@@ -12612,6 +12987,7 @@ function bindGlobal() {
+         <button class="btn" onclick="closeSheet()">关闭</button>`);
+       return;
+     }
++    if (e.target.closest('#miBulkImport')) { openBulkImport(); return; }
+   });
+ 
+   /*
+@@ -12926,6 +13302,372 @@ function askNewGroup() {
+   };
+ }
+ 
++/* ---------------- 批量导入持仓 ---------------- */
++
++/**
++ * 批量导入：把多只持仓一次录进来。
++ *
++ * 背景：Lite 为了把安装包从 22.4MB 压到 2.1MB，把 ML Kit OCR 和
++ * 「截图导入持仓」整段删了，只剩一只一只手输。原版养基宝的识图
++ * 同步回不来了，但「一次粘贴、多只导入」可以补回来 —— 数据
++ * 本来就是用户自己的，粘贴文本不需要任何账号与上传。
++ *
++ * 支持两种粘贴格式：
++ *   1. 文本，一行一只：代码 份额 成本净值 [买入日期]，空格或逗号分隔，
++ *      基金名可写可不写（写了会原样采用，没写就联网按代码查），
++ *      从 Markdown 表格直接复制过来也能认（表头、分隔行与千分位
++ *      逗号都会自动处理）：
++ *        018738 1681.76 5.2469 2026-04-14
++ *        006491 南方中债1-3年国开行债券指数 29538.04 1.0153 2026-08-01
++ *   2. JSON：数组，或本 App「导出数据」的那种 { holdings: [...] }，
++ *      字段名兼容 code/代码、shares/份额、costNav/成本/成本净值、
++ *      buyDate/买入日期、name/基金名。
++ * 导入前先出预览表（新增 / 更新 / 错误原因），确认后才写盘。
++ * 已在持仓里的代码按「更新」处理（覆盖份额与成本），不会重复加。
++ */
++
++const bulkImport = {
++  /** 解析粘贴内容，返回 { rows: [...], errors: [...] }。只解析，不写盘。 */
++  parse(text) {
++    const rows = [], errors = [];
++    const t = (text || '').trim();
++    if (!t) return { rows, errors };
++
++    // JSON 优先：数组，或 { holdings: [...] }（本 App 导出格式）
++    if (t[0] === '[' || t[0] === '{') {
++      try {
++        const j = JSON.parse(t);
++        const arr = Array.isArray(j) ? j
++          : (Array.isArray(j.holdings) ? j.holdings
++          : (j.code ? [j] : null));
++        if (!arr) throw new Error('JSON 里没有持仓数组');
++        arr.forEach((o, i) => {
++          const r = this.fromObject(o, i + 1);
++          (r.error ? errors : rows).push(r);
++        });
++        return { rows: this.dedupe(rows), errors };
++      } catch (e) { /* 不是合法 JSON，按文本继续解析 */ }
++    }
++
++    // Markdown 表头：记下收益/成本列的位置，后面的行按列角色解析。
++    let colRoles = null;
++    t.split(/\r?\n/).forEach((line, i) => {
++      const s = (line || '').trim();
++      if (/代码/.test(s) && /份额/.test(s)) colRoles = this.headerRoles(s);
++      const r = this.fromLine(line, i + 1, colRoles);
++      if (!r) return;               // 空行 / 表头行 / 分隔行直接跳过
++      (r.error ? errors : rows).push(r);
++    });
++    return { rows: this.dedupe(rows), errors };
++  },
++
++  /** 按 fromLine 同款切分规则切一行（表头与数据行下标才能对齐）。 */
++  splitCells(s) {
++    const parts = [];
++    for (const seg of s.split(/[\s;；|]+/).filter(Boolean)) {
++      if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(seg)) parts.push(seg.replace(/,/g, ''));
++      else parts.push(...seg.split(/[,，、]+/).filter(Boolean));
++    }
++    return parts;
++  },
++
++  /** 表头行 → 每列的角色（gain / cost / shares / date / code / ''）。 */
++  headerRoles(line) {
++    return this.splitCells(line).map(c =>
++      /收益/.test(c) ? 'gain'
++      : /成本/.test(c) ? 'cost'
++      : /份额/.test(c) ? 'shares'
++      : /日期|买入/.test(c) ? 'date'
++      : /代码/.test(c) ? 'code' : '');
++  },
++
++  /** 对象形式（JSON 里的一只）→ 行；字段名中英都认。 */
++  fromObject(o, n) {
++    if (!o || typeof o !== 'object') return { error: '第 ' + n + ' 条不是对象' };
++    const code = String(o.code || o['代码'] || '').trim();
++    const shares = parseFloat(o.shares ?? o['份额'] ?? o['份']);
++    const cost = parseFloat(o.costNav ?? o.cost ?? o['成本净值'] ?? o['成本']);
++    // 按收益导入：gain（别名 profit / 持有收益）优先于 costNav。
++    const gainRaw = o.gain ?? o.profit ?? o['持有收益'];
++    const gain = (gainRaw == null || gainRaw === '') ? null : parseFloat(gainRaw);
++    const buyDate = this.normDate(o.buyDate || o['买入日期'] || o['买入日'] || '');
++    const name = String(o.name || o['基金名'] || o['名称'] || '').trim();
++    const group = String(o.group || o['分组'] || '').trim();
++    const divMode = o.divMode === 'reinvest' ? 'reinvest' : '';
++    const r = this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 条', gain);
++    if (!r.error) { if (group) r.group = group; if (divMode) r.divMode = divMode; }
++    return r;
++  },
++
++  /** 文本行 → 行。colRoles：Markdown 表头给出的列角色（与 parts 下标对齐）。 */
++  fromLine(line, n, colRoles) {
++    let s = (line || '').trim();
++    if (!s) return null;
++    if (/^[\s|:\-]+$/.test(s)) return null;            // Markdown 表格分隔行
++    if (/代码/.test(s) && /份额/.test(s)) return null;  // 表头行
++    // 先按空白 / 分号 / 竖线切分；每段里再判断逗号是千分位还是分隔符：
++    // 1,681.76 这类「1~3 位 + (,三位)+」整体是千分位数字，去掉逗号；
++    // 其余含逗号的段（如 018738,1681.76）按逗号切成多个字段。
++    const parts = this.splitCells(s);
++    const ci = parts.findIndex(p => /^\d{6}$/.test(p));
++    if (ci < 0) return { error: '第 ' + n + ' 行：找不到 6 位基金代码' };
++    const code = parts[ci];
++    // 日期先抠出来，剩下的数字按顺序是份额、成本/收益
++    const di = parts.findIndex(p => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(p));
++    const buyDate = di >= 0 ? this.normDate(parts[di]) : '';
++    const isNum = p => /^[+-]?\d+(\.\d+)?$/.test(p);
++    const numIdx = [];
++    parts.forEach((p, i) => { if (i !== ci && i !== di && isNum(p)) numIdx.push(i); });
++    const shares = Number(parts[numIdx[0]]);
++    /*
++     * 第二个及以后的数字：表头指定了角色就按角色（收益列里的数
++     * 不论带不带符号都是收益，成本列里的数都是成本；两者都有时
++     * 收益优先；表头里不是收益/成本的数字列，如持有金额，直接跳过）；
++     * 没有表头时，带 +/− 号的是收益（负数恒为收益，成本不可能是
++     * 负数），不带符号的是成本。
++     */
++    let cost = null, gain = null;
++    const hasRoles = !!(colRoles && colRoles.length === parts.length);
++    for (let k = 1; k < numIdx.length; k++) {
++      const tok = parts[numIdx[k]];
++      const role = hasRoles ? (colRoles[numIdx[k]] || '') : '';
++      const v = Number(tok);
++      if (role === 'gain') { if (gain == null) gain = v; continue; }
++      if (role === 'cost') { if (cost == null) cost = v; continue; }
++      if (hasRoles) continue;
++      if (/^[+-]/.test(tok)) { if (gain == null) gain = v; }
++      else if (cost == null) { cost = v; }
++    }
++    // 名字 = 代码之后、第一个数字之前的非数字片段
++    const name = parts.slice(ci + 1)
++      .filter((p, i) => (ci + 1 + i) !== di && !isNum(p)).join('');
++    return this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 行', gain);
++  },
++
++  /**
++   * 行 → 校验后的行。gain 模式（按持有收益导入）与 cost 模式互斥：
++   * 有 gain 时不校验 cost，costNav 留空，等 apply 前按最新净值换算。
++   * 收益可正可负可为零；份额仍须 >0。
++   */
++  makeRow(code, shares, cost, buyDate, name, where, gain) {
++    if (!/^\d{6}$/.test(code || '')) return { error: where + '：基金代码不是 6 位数字' };
++    if (!isFinite(shares) || shares <= 0) return { error: where + '（' + code + '）：份额无效' };
++    if (buyDate && buyDate > todayStr()) return { error: where + '（' + code + '）：买入日期在未来' };
++    if (gain != null) {
++      if (!isFinite(gain)) return { error: where + '（' + code + '）：持有收益无效' };
++      return { code, shares, gain, costNav: null, buyDate: buyDate || null, name: name || '',
++        exists: S.holdings.some(h => h.code === code) };
++    }
++    if (!isFinite(cost) || cost <= 0) return { error: where + '（' + code + '）：成本净值无效' };
++    return { code, shares, costNav: cost, buyDate: buyDate || null, name: name || '',
++      exists: S.holdings.some(h => h.code === code) };
++  },
++
++  /** 同一只代码在粘贴内容里出现多次，以最后一次为准。 */
++  dedupe(rows) {
++    const m = new Map();
++    rows.forEach(r => m.set(r.code, r));
++    return [...m.values()];
++  },
++
++  /** 日期归一化成 YYYY-MM-DD；非法返回 ''。 */
++  normDate(v) {
++    const m = String(v || '').trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
++    if (!m) return '';
++    const d = m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
++    return isNaN(Date.parse(d)) ? '' : d;
++  },
++
++  esc(v) {
++    return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
++      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++  },
++};
++
++/** 打开批量导入弹层：粘贴 → 解析预览 → 确认导入。 */
++function openBulkImport() {
++  openSheet(`<h3>批量导入持仓</h3>
++    <div style="color:var(--fg2);font-size:var(--fs-sm);line-height:1.7;margin:-6px 0 12px">
++      一行一只，格式：<b>代码 份额 成本净值 [买入日期]</b>，空格或逗号分隔，基金名可写可不写。<br>
++      第 3 列带 +/− 号表示按持有收益导入（如 018738 1464.57 +201.03），成本会按最新净值自动换算；不带符号的第 3 列仍是成本净值。JSON 里用 gain 字段也行。<br>
++      也支持直接粘贴 JSON（数组，或本 App「导出数据」的格式）。<br>
++      不想复制粘贴也可以点下面「选择文件」，直接选一个 JSON 或文本文件。<br>
++      例：<span style="color:var(--fg)">018738 1681.76 5.2469 2026-04-14</span></div>
++    <textarea id="biText" placeholder="018738 1681.76 5.2469 2026-04-14&#10;006491 29538.04 1.0153 2026-08-01&#10;007227 16753.40 +123.98"
++      style="width:100%;height:150px;background:var(--card);border:1px solid var(--line);
++      border-radius:10px;color:var(--fg);padding:10px;font-size:var(--fs-sm)"></textarea>
++    <div style="margin-top:10px">
++      <label class="btn" for="biFile">选择文件</label>
++      <input type="file" id="biFile" accept=".json,.txt,text/plain,application/json" style="display:none">
++      <span id="biFileName" style="color:var(--fg2);font-size:var(--fs-sm);margin-left:8px"></span>
++    </div>
++    <div id="biPreview" style="margin-top:10px"></div>
++    <button class="btn primary" id="biParse" style="margin-top:10px">解析预览</button>
++    <button class="btn" onclick="closeSheet()">取消</button>`);
++
++  document.getElementById('biParse').onclick = async () => {
++    const parsed = bulkImport.parse(document.getElementById('biText').value);
++    const box = document.getElementById('biPreview');
++    if (!parsed.rows.length && !parsed.errors.length) {
++      box.innerHTML = '<div class="t-dim t-sm" style="padding:8px 0">没有可解析的内容，请按上面的格式粘贴。</div>';
++      return;
++    }
++    // 没写名字的行，按代码联网查一次名（查不到就留空，导入后显示代码）
++    await Promise.all(parsed.rows.filter(r => !r.name).map(async r => {
++      try {
++        const hit = (await api.search(r.code)).find(o => o.code === r.code);
++        if (hit) r.name = hit.name;
++      } catch (e) { /* 查不到不挡导入 */ }
++    }));
++    // 带收益的行：按最新净值换算出成本，预览里一起显示；
++    // 换算不出来的行先标错，确认时不会导入它。
++    await Promise.all(parsed.rows.filter(r => r.gain != null).map(async r => {
++      try {
++        const c = await gainToCost(r.code, r.gain, r.shares, r.name);
++        if (c && isFinite(c.costNav) && c.costNav > 0) {
++          r.costNav = c.costNav; r.gainNav = c.nav;
++        } else {
++          r.gainError = '取不到最新净值，无法按收益换算成本';
++        }
++      } catch (e) {
++        r.gainError = '取不到最新净值，无法按收益换算成本';
++      }
++    }));
++    const rowHtml = parsed.rows.map(r => {
++      let v;
++      if (r.gain != null) {
++        v = fmt(r.shares, 2) + ' 份 · 持有收益 ' + moneyTxt(r.gain);
++        if (r.gainError) {
++          v += ' <b style="color:var(--up)">' + bulkImport.esc(r.gainError) + '</b>';
++        } else if (r.costNav != null) {
++          v += ' · 成本 ' + fmt(r.costNav, 4)
++            + ' <span style="color:var(--dim)">（由收益换算，按最新净值 '
++            + fmt(r.gainNav, 4) + '）</span>';
++        }
++      } else {
++        v = fmt(r.shares, 2) + ' 份 · 成本 ' + fmt(r.costNav, 4);
++      }
++      return '<div class="kv"><span class="k">' + bulkImport.esc(r.name || r.code) + ' · ' + r.code + '</span>'
++        + '<span class="v">' + v
++        + (r.buyDate ? ' · ' + r.buyDate : '')
++        + ' <b style="color:' + (r.exists ? 'var(--up)' : 'var(--accent)') + '">'
++        + (r.exists ? '更新' : '新增') + '</b></span></div>';
++    }).join('');
++    const errHtml = parsed.errors.map(e =>
++      '<div class="t-sm" style="color:var(--up);padding:4px 0">' + bulkImport.esc(e.error) + '</div>').join('');
++    // 换算失败的行不进确认列表，按钮上的只数就是实际会导入的只数
++    const okRows = parsed.rows.filter(r => r.gain == null || r.costNav != null);
++    box.innerHTML = rowHtml + errHtml
++      + (okRows.length
++        ? '<button class="btn primary" id="biOk" style="margin-top:10px">确认导入 '
++          + okRows.length + ' 只</button>'
++        : '<div class="t-dim t-sm" style="padding:8px 0">没有可导入的行。</div>');
++    const ok = document.getElementById('biOk');
++    if (ok) ok.onclick = () => bulkImportApply(okRows);
++  };
++
++  // 选文件：把文件内容读进粘贴框，再走同一套解析预览。
++  // 注意：光有这个 input 还不够，App 的 WebView 必须实现
++  // onShowFileChooser 才会弹出系统选文件器（见 MainActivity）。
++  document.getElementById('biFile').onchange = (ev) => {
++    const f = ev.target.files && ev.target.files[0];
++    if (!f) return;
++    document.getElementById('biFileName').textContent = f.name;
++    const rd = new FileReader();
++    rd.onload = () => {
++      document.getElementById('biText').value = String(rd.result || '');
++      document.getElementById('biParse').click();
++    };
++    rd.onerror = () => {
++      document.getElementById('biFileName').textContent = '读取失败，请重试';
++    };
++    rd.readAsText(f);
++  };
++}
++
++/**
++ * 按持有收益换算成本：costNav = 当前净值 − gain / shares。
++ *
++ * 取数走 navPairOf（和 1.1.2 货币基金修正同款逻辑）：
++ * 货币基金净值恒为 1，绝不能用 lsjz 的 DWJZ（万份收益，约 0.2）
++ * 当净值。档案/净值没拉到时先拉一次；还取不到就返回 null，
++ * 调用方把该行记为失败、不导入。
++ */
++async function gainToCost(code, gain, shares, name) {
++  // 先拉档案：货币基金的判定（有没有每万份收益序列）要靠它，
++  // 档案没回来之前不能信名字、更不能信 lsjz 的 DWJZ。
++  if (!S.full[code]) {
++    try { S.full[code] = await api.fundFull(code); } catch (e) { /* ignore */ }
++  }
++  // 档案没拉到时用名字兜底（“货币/余额宝/收益宝”等字眼），
++  // 宁可把一只货币基金认出来，也不要拿万份收益当净值算。
++  if (isMoneyFund(code) || /货币|理财|现金管理|余额宝|收益宝/.test(name || '')) {
++    return { costNav: 1 - gain / shares, nav: 1 };
++  }
++  if (!S.nav[code]) {
++    try {
++      const list = await api.navHistory(code, 2);
++      if (list.length) S.nav[code] = list[0];
++    } catch (e) { /* ignore */ }
++  }
++  const pair = navPairOf(code);
++  if (!pair || !isFinite(pair.curNav) || !(pair.curNav > 0)) return null;
++  return { costNav: pair.curNav - gain / shares, nav: pair.curNav };
++}
++
++/** 把预览通过的行写进持仓（与单只添加同一套保存逻辑）。 */
++async function bulkImportApply(rows) {
++  let added = 0, updated = 0;
++  const failed = [];
++  for (const r of rows) {
++    // 按收益导入的行：保存前按最新净值换算成本（预览里算过一次，
++    // 这里再算一次为准；取不到净值或换算出的成本不合理就跳过该行）。
++    if (r.gain != null) {
++      let c = null;
++      try { c = await gainToCost(r.code, r.gain, r.shares, r.name); } catch (e) { /* ignore */ }
++      if (!c || !isFinite(c.costNav) || c.costNav <= 0) {
++        failed.push({ code: r.code, name: r.name || r.code,
++          reason: '取不到最新净值，无法按收益换算成本' });
++        continue;
++      }
++      r.costNav = c.costNav;
++    }
++    const patch = { shares: r.shares, costNav: r.costNav,
++      group: r.group || '默认', divMode: r.divMode || 'cash',
++      buyDate: r.buyDate || null };
++    if (r.name) patch.name = r.name;
++    const exist = S.holdings.find(h => h.code === r.code);
++    if (exist) {
++      Object.assign(exist, patch);
++      updated++;
++      // 更新份额时像单只编辑一样记一条今天快照，让收益率曲线不断档
++      txLog.record(r.code, todayStr(), r.shares);
++    } else {
++      S.holdings.push(Object.assign({ code: r.code, addedAt: todayStr() }, patch));
++      added++;
++      // 新持仓还没有流水：用买入日（没有就用今天）补一条基线，
++      // 历史收益才能从买入那天算起；已有流水的不动 —— 往中间插
++      // 一条过去的快照会打乱快照顺序。
++      txLog.record(r.code, r.buyDate || todayStr(), r.shares);
++    }
++  }
++  store.save();
++  closeSheet();
++  await refreshNav();
++  render();
++  toast('已导入 ' + (added + updated) + ' 只（新增 ' + added + '，更新 ' + updated + '）');
++  // 按收益换算失败的行没入库，在这里把原因交代清楚（toast 只显示 1.7 秒，写不下）。
++  if (failed.length) {
++    openSheet('<h3>有 ' + failed.length + ' 只未导入</h3>'
++      + failed.map(f => '<div class="kv"><span class="k">' + bulkImport.esc(f.name)
++        + ' · ' + f.code + '</span><span class="v" style="color:var(--up)">'
++        + bulkImport.esc(f.reason) + '</span></div>').join('')
++      + '<div style="color:var(--fg2);font-size:var(--fs-sm);line-height:1.7;margin:8px 0">'
++      + '可以联网后重新导入这几只，或改按成本净值导入。</div>'
++      + '<button class="btn" onclick="closeSheet()">知道了</button>');
++  }
++}
++
+ /* ---------------- 持仓操作菜单 ---------------- */
+ 
+ /** 长按持仓弹出的操作面板。 */
 diff --git a/app/src/main/java/com/yjb/lite/MainActivity.kt b/app/src/main/java/com/yjb/lite/MainActivity.kt
 index d91c09f..e691cea 100644
 --- a/app/src/main/java/com/yjb/lite/MainActivity.kt
@@ -138,11 +1140,46 @@ index d91c09f..e691cea 100644
      }
  
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..6a4b078 100644
+index 40f6d36..02d2044 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
-@@ -2856,6 +2856,9 @@ const api = {
+@@ -2338,6 +2338,8 @@ const S = {
+   replay: {},     // code -> {score:{beta,r2}, at} 持仓回演结果，一天缓存
+   perfCurve: null,// 账户历史收益率曲线
+   perfDays: 60,   // 曲线区间
++  pnlStats: null, // 收益分析聚合结果（400 个交易日窗口的日收益序列）
++  pnlMode: 'day', // 收益分析柱状图档位：day | month | year
+   chartRange: 60, // 净值走势图区间（交易日）
+   klineScale: 5,  // K 线周期（分钟）
+   perfBusy: false,
+@@ -2850,12 +2852,35 @@ const api = {
+     const name = str('fS_name');
+     const last = trend.length ? trend[trend.length - 1] : null;
+ 
++    /*
++     * 货币基金每日万份收益序列：[[时间戳, 每万份收益], ...]。
++     * 货币基金没有净值曲线（trend 为空），但这份序列就是它每天
++     * 实打实赚的钱：当日收益 = 持有份额 / 10000 × 万份收益。
++     * 收益分析用它把货币基金的日收益补回来，否则货币基金在
++     * 日收益序列里永远是 0，累计收益会比资产页少一大截。
++     * 非货币基金没有这个序列，解析出来是空数组，不占地方。
++     */
++    const mic = arr('Data_millionCopiesIncome') || [];
++    const millionIncome = [];
++    for (const p of mic) {
++      if (!p || !isFinite(+p[0]) || !isFinite(+p[1])) continue;
++      millionIncome.push({
++        date: new Date(+p[0] + 8 * 3600e3).toISOString().slice(0, 10),
++        val: +p[1],
++      });
++    }
++    millionIncome.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
++
+     return {
+       code, name,
+       trend,
        divs,
++      millionIncome,
        latest: last,
        type: fundType(name, trend),
 +      // 货币基金才有每万份收益序列；非货币基金没有。
@@ -151,7 +1188,7 @@ index 40f6d36..6a4b078 100644
        lagDays: last ? dayGap(last.date) : null,
      };
    },
-@@ -5767,6 +5770,23 @@ const FUND_TYPE_NAME = {
+@@ -5767,6 +5792,23 @@ const FUND_TYPE_NAME = {
    index: '指数', stock: '股票', mix: '混合',
  };
  
@@ -175,7 +1212,7 @@ index 40f6d36..6a4b078 100644
  /**
   * 计算一只持仓的真实盈亏，把分红算进去。
   *
-@@ -6228,6 +6248,8 @@ function mergeNavIntoFull(code, list) {
+@@ -6228,6 +6270,8 @@ function mergeNavIntoFull(code, list) {
  
  /** 当前价格：优先实时估值，其次最新净值，最后成本 */
  function priceOf(code, fallback) {
@@ -184,7 +1221,7 @@ index 40f6d36..6a4b078 100644
    const g = S.gz[code];
    if (g && g.gsz) return g.gsz;
    const q = S.nav[code];
-@@ -6258,6 +6280,13 @@ function navPairOf(code) {
+@@ -6258,6 +6302,13 @@ function navPairOf(code) {
    const q = S.nav[code];
    if (!q) return null;
  
@@ -198,7 +1235,478 @@ index 40f6d36..6a4b078 100644
    const full = S.full[code];
    const trend = full && full.trend && full.trend.length ? full.trend : null;
    const today = todayStr();
-@@ -10368,6 +10397,7 @@ function viewSettings() {
+@@ -8777,31 +8828,33 @@ function viewDiag() {
+   html += '</div>';
+   return html;
+ }
+-/* ---- 历史收益率（账户 vs 大盘） ---- */
++/** 'YYYY-MM-DD' 的下一天（按 UTC 日历算，不受手机时区影响） */
++function nextDayStr(ds) {
++  return new Date(Date.parse(ds + 'T00:00:00Z') + 864e5).toISOString().slice(0, 10);
++}
+ 
+ /**
+- * 用当前持仓回溯账户净值曲线。
++ * 逐日重建「当日市值 + 当日净流入 + 当日分红 + 货币基金当日收益」。
+  *
+- * 算法：把每只基金的净值历史按持有份额加权加起来，
+- * 得到「如果一直持有现在这套组合，账户每天值多少钱」。
++ * 这是 TWR 曲线和收益分析共用的唯一取数逻辑，两处口径一致：
++ *   rows[i] = { date, mv, flow, div, inc }
++ *     mv   当日总市值（份额 × 当日净值，缺失用前值填充）
++ *     flow 当日净流入 = Σ(份额变化 × 当日净值)，买入为正、卖出为负
++ *     div  当日分红现金 = Σ(每份分红 × 当日份额)
++ *     inc  货币基金当日收益 = Σ(份额 / 10000 × 万份收益)
+  *
+- * 注意这是「当前组合的回溯」，不是真实成交记录——
+- * 中途加减仓会影响实际收益，但用来判断
+- * 「我选的这些基金跑赢大盘了吗」是完全够用的。
++ * 货币基金没有净值曲线（pingzhongdata 里只有每万份收益），
++ * 这里按 isMoneyFund 的规则把它当净值 1 算，和 navPairOf 的
++ * 修正保持一致；不补的话它在序列里市值永远是 0，买入那天
++ * 的净流入也被跳过。
+  *
+- * 归一化到 100 起，和沪深300 放在同一坐标系里比较。
+- * 不同基金净值日期不完全一致（QDII 会滞后两天），
+- * 统一按日期并集、缺失用前值填充，避免曲线断点。
++ * 返回截掉「还没持仓」的前缀后的 seq，不足 2 天返回 null。
+  */
+-async function buildPerfCurve(days) {
++function buildDailyRows(days) {
+   const N = days || 60;
+   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+   if (!hs.length) return null;
+ 
+-  // 基准：沪深300
+-  let bench = null;
+-  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
+-
+   // 收集所有出现过的日期，取最近 N 个交易日
+   const dateSet = Object.create(null);
+   for (const h of hs) {
+@@ -8817,17 +8870,37 @@ async function buildPerfCurve(days) {
+    * 份额不再是拿当前值一刀切，而是逐日还原：
+    *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
+    *   没流水 → 退化成「从起始日起一直持有现在的份额」
+-   * 起始日的取法：优先用户填的买入日，其次加入日期，
++   * 起始日的取法：优先流水第一天，其次用户填的买入日/加入日，
+    * 最后按成本价在净值曲线上反推一个大概的日子。
+    */
+   const funds = hs.map(h => {
+     const m = Object.create(null);
+     for (const t of S.full[h.code].trend) m[t.date] = t.nav;
++    const full = S.full[h.code];
++    /*
++     * 当日分红（每份派多少钱）：分红当天净值会被除息砸下去，
++     * 市值凭空少一块。现金分红的钱打到余额里、红利再投的份额
++     * 在 App 里是静态的不会自己变大，两者都得把这笔钱加回来，
++     * 否则分红日会被算成一天亏了分红那么多。和 holdCalc 只认
++     * kind==='div' 保持一致，拆分（split）不处理。
++     */
++    const divMap = Object.create(null);
++    if (full && full.divs) {
++      for (const dv of full.divs) {
++        if (dv.kind === 'div' && dv.date) divMap[dv.date] = (divMap[dv.date] || 0) + dv.per;
++      }
++    }
++    // 货币基金每日万份收益：日期 -> 每万份收益（见 fundFull）。
++    const incMap = Object.create(null);
++    if (full && full.millionIncome) {
++      for (const mi of full.millionIncome) incMap[mi.date] = mi.val;
++    }
+     const fixed = +h.shares || 0;
+-    const from = txLog.firstDate(h.code) || inferStartDate(h, S.full[h.code]);
++    const from = txLog.firstDate(h.code) || h.buyDate || h.addedAt
++      || inferStartDate(h, S.full[h.code]);
+     return {
+       code: h.code,
+-      m,
++      m, divMap, incMap,
+       from,
+       fixed,
+       shareAt(d) {
+@@ -8844,12 +8917,14 @@ async function buildPerfCurve(days) {
+   const rows = [];
+   const lastNav = Object.create(null);
+   let prevShares = null;
++  let prevDate = null;
+   for (const d of use) {
+     const shares = Object.create(null);
+     let mv = 0;
+     for (const f of funds) {
+       const nav = f.m[d];
+       if (nav != null) lastNav[f.code] = nav;
++      else if (lastNav[f.code] == null && isMoneyFund(f.code)) lastNav[f.code] = 1;
+       const sh = f.shareAt(d);
+       shares[f.code] = sh;
+       const px = lastNav[f.code];
+@@ -8866,15 +8941,79 @@ async function buildPerfCurve(days) {
+         if (ds) flow += px * ds;
+       }
+     }
+-    rows.push({ date: d, mv, flow });
++
++    // 当日分红现金（见 funds 里的 divMap 注释）。
++    let div = 0;
++    for (const f of funds) {
++      const per = f.divMap[d];
++      if (per) div += per * (shares[f.code] || 0);
++    }
++
++    /*
++     * 货币基金当日收益：份额 / 10000 × 万份收益。
++     * 行是交易日，万份收益是自然日：周末两天的收益在周一
++     * 一并算进来（从上一行日期之后到今天为止的所有自然日），
++     * 否则每周会固定漏掉两天。每天的份额按当天实际持有算
++     * （shareAt），周六买入的话，周六周日的收益不算——
++     * 那两天钱还没进去。
++     */
++    let inc = 0;
++    if (prevDate) {
++      for (const f of funds) {
++        if (!(shares[f.code] > 0)) continue;
++        let s = 0;
++        let cur = nextDayStr(prevDate);
++        while (cur <= d) {
++          const v = f.incMap[cur];
++          if (v != null) {
++            const shDay = f.shareAt(cur);
++            if (shDay) s += shDay / 10000 * v;
++          }
++          cur = nextDayStr(cur);
++        }
++        if (s) inc += s;
++      }
++    }
++
++    rows.push({ date: d, mv, flow, div, inc });
+     prevShares = shares;
++    prevDate = d;
+   }
+ 
+-  // 跳过「一只都还没买」的那几天，曲线从真正开始持仓那天算起
++  // 跳过「一只都还没买」的那几天，序列从真正开始持仓那天算起
+   let s0 = 0;
+   while (s0 < rows.length && !(rows[s0].mv > 0)) s0++;
+   const seq = rows.slice(s0);
+   if (seq.length < 2) return null;
++  return seq;
++}
++
++/* ---- 历史收益率（账户 vs 大盘） ---- */
++
++/**
++ * 用当前持仓回溯账户净值曲线。
++ *
++ * 算法：把每只基金的净值历史按持有份额加权加起来，
++ * 得到「如果一直持有现在这套组合，账户每天值多少钱」。
++ *
++ * 注意这是「当前组合的回溯」，不是真实成交记录——
++ * 中途加减仓会影响实际收益，但用来判断
++ * 「我选的这些基金跑赢大盘了吗」是完全够用的。
++ *
++ * 归一化到 100 起，和沪深300 放在同一坐标系里比较。
++ * 不同基金净值日期不完全一致（QDII 会滞后两天），
++ * 统一按日期并集、缺失用前值填充，避免曲线断点。
++ */
++async function buildPerfCurve(days) {
++  const N = days || 60;
++
++  // 基准：沪深300
++  let bench = null;
++  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
++
++  // 逐日市值 / 净流入与收益分析共用同一份 rows（见 buildDailyRows）
++  const seq = buildDailyRows(N);
++  if (!seq) return null;
+ 
+   /*
+    * 时间加权收益率（TWR）。
+@@ -8915,11 +9054,104 @@ async function buildPerfCurve(days) {
+     acctPct: acctLast - 100,
+     benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
+     startDate: seqDates[0],
+-    // 前几天因为「还没持仓」被砍掉了，界面据此说明区间为何比选定的短
+-    skipped: s0,
+   };
+ }
+ 
++/* ---- 收益分析：日收益聚合成今日 / 本月 / 本年 / 累计 ---- */
++
++/*
++ * 收益分析用的窗口：比曲线页的 20/60/120 日长得多，
++ * 否则「本年累计」永远算不满一年。
++ * 400 个交易日 ≈ 一年半，覆盖一个完整自然年还有富余；
++ * 再长的话 fundFull 的 trend 虽然没截断，但算起来也没必要。
++ * 窗口盖不住的年份/月份，界面按实际起止标注，不假装算全了。
++ */
++const PNL_DAYS = 400;
++
++/**
++ * 把逐日 rows 聚合成收益数字。
++ *
++ * 口径（和 TWR 曲线同一批 rows，不另起取数逻辑）：
++ *   pnl(t) = mv(t) − mv(t−1) − flow(t) + div(t) + inc(t)
++ * 减掉净流入是关键：买入/加仓当天市值变大不算赚，卖出当天
++ * 市值变小也不算亏。分红和货币基金收益是真金白银，加回来。
++ * seq[0] 没有上一日，无法算 pnl，从 seq[1] 起算。
++ *
++ * 百分比是时间加权（TWR）口径：把区间内每日的
++ * r(t) = pnl(t) / mv(t−1) 连乘起来，剔除了中途加减仓的影响，
++ * 和上面那条曲线的算法一致。直接用「收益 / 期初市值」会在
++ * 年内有大额加仓时严重失真（比如 8 月加了 6 万，分母却只
++ * 有 1 月初的 9 千）。
++ *
++ * 返回 null 表示数据不足（没持仓 / 天数不够 / 只有货币基金，
++ * 货币基金没有净值日期，拼不出交易日序列）。
++ */
++function aggregatePnl(seq) {
++  if (!seq || seq.length < 2) return null;
++
++  const daily = [];
++  for (let i = 1; i < seq.length; i++) {
++    daily.push({
++      date: seq[i].date,
++      pnl: seq[i].mv - seq[i - 1].mv - seq[i].flow
++        + (seq[i].div || 0) + (seq[i].inc || 0),
++      mv: seq[i].mv,
++    });
++  }
++  if (!daily.length) return null;
++
++  const sum = arr => arr.reduce((a, b) => a + b.pnl, 0);
++
++  // 区间 TWR：连乘每日 r(t)；某日上一日市值为 0 时跳过那天。
++  const twr = list => {
++    let acc = 1, n = 0;
++    for (const d of list) {
++      const idx = daily.indexOf(d);
++      const base = idx > 0 ? daily[idx - 1].mv : seq[0].mv;
++      if (!(base > 0)) continue;
++      acc *= (1 + d.pnl / base);
++      n++;
++    }
++    return n ? (acc - 1) * 100 : null;
++  };
++
++  const today = todayStr();
++  const ym = today.slice(0, 7);
++  const yr = today.slice(0, 4);
++  const inMonth = daily.filter(d => d.date.slice(0, 7) === ym);
++  const inYear = daily.filter(d => d.date.slice(0, 4) === yr);
++  const last = daily[daily.length - 1];
++
++  return {
++    daily,
++    windowStart: seq[0].date,
++    windowEnd: seq[seq.length - 1].date,
++    today: { pnl: last.pnl, pct: twr([last]), date: last.date },
++    month: {
++      pnl: sum(inMonth), pct: twr(inMonth),
++      label: ym, from: inMonth.length ? inMonth[0].date : null,
++    },
++    year: {
++      pnl: sum(inYear), pct: twr(inYear),
++      label: yr, from: inYear.length ? inYear[0].date : null,
++    },
++    total: {
++      pnl: sum(daily), pct: twr(daily),
++      from: seq[0].date,
++    },
++  };
++}
++
++/** 同步算收益分析（S.full 已在内存里，不用等网络） */
++function computePnlStats() {
++  try {
++    const seq = buildDailyRows(PNL_DAYS);
++    return aggregatePnl(seq);
++  } catch (e) {
++    return null;
++  }
++}
++
+ /**
+  * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
+  *
+@@ -8985,6 +9217,92 @@ function perfChart(curve) {
+     "</svg>";
+ }
+ 
++/**
++ * 收益柱状图（纯 SVG，不引图表库，风格和 perfChart 一致）。
++ *
++ * 三档：
++ *   day   最近 30 个交易日的每日收益
++ *   month 窗口内各自然月的收益之和
++ *   year  窗口内各自然年的收益之和
++ *
++ * 涨用 --up、跌用 --down，和 App 其余地方一样
++ * （A 股习惯红涨绿跌，别按美股的绿涨红跌画）。
++ * 柱子少（≤12 根）时每根都标金额；柱子多时只标最大和最小两根，
++ * 免得数字挤成一团。x 轴只标首、中、末三个刻度。
++ */
++function pnlBars(stats, mode) {
++  if (!stats || !stats.daily.length) {
++    return "<div class=\"empty\" style=\"padding:30px\">数据不足，暂无法生成收益图</div>";
++  }
++
++  let bars = null; // [{label, pnl}]
++  if (mode === 'month') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 7);
++      if (!map[k]) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    bars = order.map(k => ({ label: k.slice(5) + "月", pnl: map[k] }));
++  } else if (mode === 'year') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 4);
++      if (!map[k]) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    bars = order.map(k => ({ label: k + "年", pnl: map[k] }));
++  } else {
++    bars = stats.daily.slice(-30).map(d => ({ label: d.date.slice(5), pnl: d.pnl }));
++  }
++  if (!bars.length) return "<div class=\"empty\" style=\"padding:30px\">本档位暂无数据</div>";
++
++  const W = 320, H = 150, PADL = 6, PADT = 18, PADB = 18;
++  let lo = 0, hi = 0;
++  for (const b of bars) { if (b.pnl < lo) lo = b.pnl; if (b.pnl > hi) hi = b.pnl; }
++  if (hi - lo < 1e-9) { hi = 1; if (lo > 0) lo = 0; }
++  const pad = (hi - lo) * 0.08;
++  lo -= pad; hi += pad;
++  const y = v => PADT + (H - PADT - PADB) * ((hi - v) / (hi - lo));
++  const y0 = y(0);
++  const slot = (W - PADL * 2) / bars.length;
++  const bw = Math.max(2, slot * 0.62);
++
++  let maxI = 0, minI = 0;
++  bars.forEach((b, i) => {
++    if (b.pnl > bars[maxI].pnl) maxI = i;
++    if (b.pnl < bars[minI].pnl) minI = i;
++  });
++
++  let s = "<svg viewBox=\"0 0 " + W + " " + H + "\" preserveAspectRatio=\"none\" style=\"width:100%;height:" + H + "px;display:block\">";
++  s += "<line x1=\"" + PADL + "\" y1=\"" + y0.toFixed(1) + "\" x2=\"" + (W - PADL) + "\" y2=\"" + y0.toFixed(1) + "\" stroke=\"var(--line)\" stroke-width=\"1\"/>";
++  bars.forEach((b, i) => {
++    const cx = PADL + slot * i + slot / 2;
++    const yv = y(b.pnl);
++    const top = Math.min(yv, y0), h = Math.max(1, Math.abs(y0 - yv));
++    const col = b.pnl >= 0 ? "var(--up)" : "var(--down)";
++    s += "<rect x=\"" + (cx - bw / 2).toFixed(1) + "\" y=\"" + top.toFixed(1) + "\" width=\"" + bw.toFixed(1) + "\" height=\"" + h.toFixed(1) + "\" rx=\"1.5\" fill=\"" + col + "\"/>";
++    // 金额标注：柱子少时全标，多时只标最大 / 最小两根
++    if (bars.length <= 12 || i === maxI || i === minI) {
++      const ty = b.pnl >= 0 ? top - 4 : top + h + 10;
++      s += "<text x=\"" + cx.toFixed(1) + "\" y=\"" + ty.toFixed(1) + "\" font-size=\"8.5\" fill=\"var(--fg2)\" text-anchor=\"middle\">" + moneyTxt(b.pnl) + "</text>";
++    }
++  });
++  // x 轴刻度：首 / 中 / 末
++  const ticks = [0, Math.floor((bars.length - 1) / 2), bars.length - 1];
++  const seen = Object.create(null);
++  for (const i of ticks) {
++    if (seen[bars[i].label]) continue;
++    seen[bars[i].label] = 1;
++    const cx = PADL + slot * i + slot / 2;
++    s += "<text x=\"" + cx.toFixed(1) + "\" y=\"" + (H - 5) + "\" font-size=\"9\" fill=\"var(--dim)\" text-anchor=\"middle\">" + bars[i].label + "</text>";
++  }
++  s += "</svg>";
++  return s;
++}
++
+ /**
+  * 历史总资产涨跌页。
+  *
+@@ -9068,19 +9386,69 @@ function viewPerf() {
+     "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
+     "</div></div>";
+ 
++  // ---- 收益分析（本 fork 新增 v1.1.3）----
++  html += "<div class=\"pcard\" style=\"margin:10px 12px;padding:14px\">";
++  html += "<div style=\"font-size:var(--fs-md);font-weight:700\">收益分析</div>";
++  const ps = S.pnlStats;
++  if (S.perfBusy && !ps) {
++    html += "<div class=\"empty\" style=\"padding:24px 0\">正在回溯…</div>";
++  } else if (!ps) {
++    html += "<div class=\"empty\" style=\"padding:24px 0\">数据不足，暂无法分析收益</div>";
++  } else {
++    // 四组汇总：今日 / 本月 / 本年 / 累计，每组都标实际起止
++    const cells = [
++      { t: "今日收益", v: ps.today, sub: ps.today.date.slice(5) },
++      { t: "本月收益", v: ps.month, sub: ps.month.from ? "自 " + ps.month.from.slice(5) + " 起" : ps.month.label },
++      { t: "本年累计", v: ps.year, sub: ps.year.from ? "自 " + ps.year.from.slice(5) + " 起" : ps.year.label + "年" },
++      { t: "累计收益", v: ps.total, sub: "自 " + ps.total.from + " 起" },
++    ];
++    html += "<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;margin-top:12px\">";
++    for (const cell of cells) {
++      html += "<div style=\"text-align:center\">";
++      html += "<div style=\"font-size:var(--fs-xs);color:var(--dim)\">" + cell.t + "</div>";
++      html += "<div class=\"" + pctCls(cell.v.pnl) + "\" style=\"font-size:var(--fs-lg);font-weight:700;margin-top:2px\">" + moneyFull(cell.v.pnl) + "</div>";
++      html += "<div class=\"" + pctCls(cell.v.pct) + "\" style=\"font-size:var(--fs-xs);margin-top:1px\">" + pctTxt(cell.v.pct) + "</div>";
++      html += "<div style=\"font-size:var(--fs-xs);color:var(--dim);margin-top:1px\">" + cell.sub + "</div>";
++      html += "</div>";
++    }
++    html += "</div>";
++    // 柱状图档位：日 / 月 / 年
++    const mode = S.pnlMode || 'day';
++    html += "<div class=\"sectabs\" style=\"padding:12px 0 0\">";
++    for (const m of [['day', '日'], ['month', '月'], ['year', '年']]) {
++      html += "<button data-pnlmode=\"" + m[0] + "\" class=\"" + (mode === m[0] ? "on" : "") + "\" style=\"flex:1\">" + m[1] + "收益</button>";
++    }
++    html += "</div>";
++    html += "<div style=\"margin-top:4px\">" + pnlBars(ps, mode) + "</div>";
++    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
++      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
++      "百分比为时间加权收益率，剔除了加减仓的影响。<br>" +
++      "窗口：" + ps.windowStart + " 至 " + ps.windowEnd + "（近 " + PNL_DAYS + " 个交易日），" +
++      "窗口外的收益不计入。</div>";
++  }
++  html += "</div>";
++
+   // 逐只贡献
+   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+   if (hs.length) {
+     html += "<div class=\"colhead\"><div class=\"c0\">基金</div>" +
+       "<div class=\"c1\">占比</div><div class=\"c2\">" + days + "日</div></div>";
++    // 占比用「现价 × 份额」：货币基金的 S.nav 是万份收益（约 0.2），
++    // 不能直接当净值用，按净值 1 算，和 navPairOf 的修正一致。
++    const pxOf = h => isMoneyFund(h.code) ? 1
++      : (S.nav[h.code] ? S.nav[h.code].nav : 0);
+     let totVal = 0;
+-    for (const h of hs) totVal += (S.nav[h.code] ? S.nav[h.code].nav : 0) * h.shares;
++    for (const h of hs) totVal += pxOf(h) * h.shares;
+     for (const h of hs) {
+       const tr = S.full[h.code].trend;
+-      const cur = tr[tr.length - 1].nav;
+-      const from = tr[Math.max(0, tr.length - 1 - days)].nav;
+-      const pct = from ? (cur / from - 1) * 100 : 0;
+-      const val = (S.nav[h.code] ? S.nav[h.code].nav : cur) * h.shares;
++      // 货币基金没有净值曲线（trend 为空），直接读 tr[-1].nav 会抛错；
++      // 净值恒为 1，区间涨跌就是 0。
++      const money = isMoneyFund(h.code);
++      const cur = tr.length ? tr[tr.length - 1].nav : (money ? 1 : null);
++      const from = tr.length ? tr[Math.max(0, tr.length - 1 - days)].nav : (money ? 1 : null);
++      if (cur == null || !from) continue;
++      const pct = (cur / from - 1) * 100;
++      const val = pxOf(h) * h.shares;
+       const w = totVal ? val / totVal * 100 : 0;
+       html += "<div class=\"fund\">" +
+         "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
+@@ -9108,6 +9476,8 @@ async function loadPerf(days) {
+   } catch (e) {
+     S.perfCurve = null;
+   }
++  // 收益分析与曲线共用同一份 rows，同步算，不用等网络
++  S.pnlStats = computePnlStats();
+   S.perfBusy = false;
+   render();
+ }
+@@ -10368,6 +10738,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -206,7 +1714,18 @@ index 40f6d36..6a4b078 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -11276,6 +11306,7 @@ function bindGlobal() {
+@@ -11069,6 +11440,10 @@ function bindGlobal() {
+     const pd = e.target.closest('[data-perfd]');
+     if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
+ 
++    // 收益分析柱状图档位切换（数据已在内存里，不用重新加载）
++    const pm = e.target.closest('[data-pnlmode]');
++    if (pm) { S.pnlMode = pm.dataset.pnlmode; render(); return; }
++
+     // K 线周期切换
+     const kl = e.target.closest('[data-kline]');
+     if (kl) {
+@@ -11276,6 +11651,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -214,7 +1733,7 @@ index 40f6d36..6a4b078 100644
    });
  
    /*
-@@ -11590,6 +11621,235 @@ function askNewGroup() {
+@@ -11590,6 +11966,372 @@ function askNewGroup() {
    };
  }
  
@@ -265,12 +1784,36 @@ index 40f6d36..6a4b078 100644
 +      } catch (e) { /* 不是合法 JSON，按文本继续解析 */ }
 +    }
 +
++    // Markdown 表头：记下收益/成本列的位置，后面的行按列角色解析。
++    let colRoles = null;
 +    t.split(/\r?\n/).forEach((line, i) => {
-+      const r = this.fromLine(line, i + 1);
++      const s = (line || '').trim();
++      if (/代码/.test(s) && /份额/.test(s)) colRoles = this.headerRoles(s);
++      const r = this.fromLine(line, i + 1, colRoles);
 +      if (!r) return;               // 空行 / 表头行 / 分隔行直接跳过
 +      (r.error ? errors : rows).push(r);
 +    });
 +    return { rows: this.dedupe(rows), errors };
++  },
++
++  /** 按 fromLine 同款切分规则切一行（表头与数据行下标才能对齐）。 */
++  splitCells(s) {
++    const parts = [];
++    for (const seg of s.split(/[\s;；|]+/).filter(Boolean)) {
++      if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(seg)) parts.push(seg.replace(/,/g, ''));
++      else parts.push(...seg.split(/[,，、]+/).filter(Boolean));
++    }
++    return parts;
++  },
++
++  /** 表头行 → 每列的角色（gain / cost / shares / date / code / ''）。 */
++  headerRoles(line) {
++    return this.splitCells(line).map(c =>
++      /收益/.test(c) ? 'gain'
++      : /成本/.test(c) ? 'cost'
++      : /份额/.test(c) ? 'shares'
++      : /日期|买入/.test(c) ? 'date'
++      : /代码/.test(c) ? 'code' : '');
 +  },
 +
 +  /** 对象形式（JSON 里的一只）→ 行；字段名中英都认。 */
@@ -279,17 +1822,20 @@ index 40f6d36..6a4b078 100644
 +    const code = String(o.code || o['代码'] || '').trim();
 +    const shares = parseFloat(o.shares ?? o['份额'] ?? o['份']);
 +    const cost = parseFloat(o.costNav ?? o.cost ?? o['成本净值'] ?? o['成本']);
++    // 按收益导入：gain（别名 profit / 持有收益）优先于 costNav。
++    const gainRaw = o.gain ?? o.profit ?? o['持有收益'];
++    const gain = (gainRaw == null || gainRaw === '') ? null : parseFloat(gainRaw);
 +    const buyDate = this.normDate(o.buyDate || o['买入日期'] || o['买入日'] || '');
 +    const name = String(o.name || o['基金名'] || o['名称'] || '').trim();
 +    const group = String(o.group || o['分组'] || '').trim();
 +    const divMode = o.divMode === 'reinvest' ? 'reinvest' : '';
-+    const r = this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 条');
++    const r = this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 条', gain);
 +    if (!r.error) { if (group) r.group = group; if (divMode) r.divMode = divMode; }
 +    return r;
 +  },
 +
-+  /** 文本行 → 行。 */
-+  fromLine(line, n) {
++  /** 文本行 → 行。colRoles：Markdown 表头给出的列角色（与 parts 下标对齐）。 */
++  fromLine(line, n, colRoles) {
 +    let s = (line || '').trim();
 +    if (!s) return null;
 +    if (/^[\s|:\-]+$/.test(s)) return null;            // Markdown 表格分隔行
@@ -297,31 +1843,57 @@ index 40f6d36..6a4b078 100644
 +    // 先按空白 / 分号 / 竖线切分；每段里再判断逗号是千分位还是分隔符：
 +    // 1,681.76 这类「1~3 位 + (,三位)+」整体是千分位数字，去掉逗号；
 +    // 其余含逗号的段（如 018738,1681.76）按逗号切成多个字段。
-+    const parts = [];
-+    for (const seg of s.split(/[\s;；|]+/).filter(Boolean)) {
-+      if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(seg)) parts.push(seg.replace(/,/g, ''));
-+      else parts.push(...seg.split(/[,，、]+/).filter(Boolean));
-+    }
++    const parts = this.splitCells(s);
 +    const ci = parts.findIndex(p => /^\d{6}$/.test(p));
 +    if (ci < 0) return { error: '第 ' + n + ' 行：找不到 6 位基金代码' };
 +    const code = parts[ci];
-+    // 日期先抠出来，剩下的数字按顺序是份额、成本
++    // 日期先抠出来，剩下的数字按顺序是份额、成本/收益
 +    const di = parts.findIndex(p => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(p));
 +    const buyDate = di >= 0 ? this.normDate(parts[di]) : '';
-+    const nums = parts.filter((p, i) => i !== ci && i !== di
-+      && /^-?\d+(\.\d+)?$/.test(p)).map(Number);
-+    const shares = nums[0], cost = nums[1];
++    const isNum = p => /^[+-]?\d+(\.\d+)?$/.test(p);
++    const numIdx = [];
++    parts.forEach((p, i) => { if (i !== ci && i !== di && isNum(p)) numIdx.push(i); });
++    const shares = Number(parts[numIdx[0]]);
++    /*
++     * 第二个及以后的数字：表头指定了角色就按角色（收益列里的数
++     * 不论带不带符号都是收益，成本列里的数都是成本；两者都有时
++     * 收益优先；表头里不是收益/成本的数字列，如持有金额，直接跳过）；
++     * 没有表头时，带 +/− 号的是收益（负数恒为收益，成本不可能是
++     * 负数），不带符号的是成本。
++     */
++    let cost = null, gain = null;
++    const hasRoles = !!(colRoles && colRoles.length === parts.length);
++    for (let k = 1; k < numIdx.length; k++) {
++      const tok = parts[numIdx[k]];
++      const role = hasRoles ? (colRoles[numIdx[k]] || '') : '';
++      const v = Number(tok);
++      if (role === 'gain') { if (gain == null) gain = v; continue; }
++      if (role === 'cost') { if (cost == null) cost = v; continue; }
++      if (hasRoles) continue;
++      if (/^[+-]/.test(tok)) { if (gain == null) gain = v; }
++      else if (cost == null) { cost = v; }
++    }
 +    // 名字 = 代码之后、第一个数字之前的非数字片段
 +    const name = parts.slice(ci + 1)
-+      .filter((p, i) => (ci + 1 + i) !== di && !/^-?\d+(\.\d+)?$/.test(p)).join('');
-+    return this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 行');
++      .filter((p, i) => (ci + 1 + i) !== di && !isNum(p)).join('');
++    return this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 行', gain);
 +  },
 +
-+  makeRow(code, shares, cost, buyDate, name, where) {
++  /**
++   * 行 → 校验后的行。gain 模式（按持有收益导入）与 cost 模式互斥：
++   * 有 gain 时不校验 cost，costNav 留空，等 apply 前按最新净值换算。
++   * 收益可正可负可为零；份额仍须 >0。
++   */
++  makeRow(code, shares, cost, buyDate, name, where, gain) {
 +    if (!/^\d{6}$/.test(code || '')) return { error: where + '：基金代码不是 6 位数字' };
 +    if (!isFinite(shares) || shares <= 0) return { error: where + '（' + code + '）：份额无效' };
-+    if (!isFinite(cost) || cost <= 0) return { error: where + '（' + code + '）：成本净值无效' };
 +    if (buyDate && buyDate > todayStr()) return { error: where + '（' + code + '）：买入日期在未来' };
++    if (gain != null) {
++      if (!isFinite(gain)) return { error: where + '（' + code + '）：持有收益无效' };
++      return { code, shares, gain, costNav: null, buyDate: buyDate || null, name: name || '',
++        exists: S.holdings.some(h => h.code === code) };
++    }
++    if (!isFinite(cost) || cost <= 0) return { error: where + '（' + code + '）：成本净值无效' };
 +    return { code, shares, costNav: cost, buyDate: buyDate || null, name: name || '',
 +      exists: S.holdings.some(h => h.code === code) };
 +  },
@@ -352,10 +1924,11 @@ index 40f6d36..6a4b078 100644
 +  openSheet(`<h3>批量导入持仓</h3>
 +    <div style="color:var(--fg2);font-size:var(--fs-sm);line-height:1.7;margin:-6px 0 12px">
 +      一行一只，格式：<b>代码 份额 成本净值 [买入日期]</b>，空格或逗号分隔，基金名可写可不写。<br>
++      第 3 列带 +/− 号表示按持有收益导入（如 018738 1464.57 +201.03），成本会按最新净值自动换算；不带符号的第 3 列仍是成本净值。JSON 里用 gain 字段也行。<br>
 +      也支持直接粘贴 JSON（数组，或本 App「导出数据」的格式）。<br>
 +      不想复制粘贴也可以点下面「选择文件」，直接选一个 JSON 或文本文件。<br>
 +      例：<span style="color:var(--fg)">018738 1681.76 5.2469 2026-04-14</span></div>
-+    <textarea id="biText" placeholder="018738 1681.76 5.2469 2026-04-14&#10;006491 29538.04 1.0153 2026-08-01"
++    <textarea id="biText" placeholder="018738 1681.76 5.2469 2026-04-14&#10;006491 29538.04 1.0153 2026-08-01&#10;007227 16753.40 +123.98"
 +      style="width:100%;height:150px;background:var(--card);border:1px solid var(--line);
 +      border-radius:10px;color:var(--fg);padding:10px;font-size:var(--fs-sm)"></textarea>
 +    <div style="margin-top:10px">
@@ -381,21 +1954,51 @@ index 40f6d36..6a4b078 100644
 +        if (hit) r.name = hit.name;
 +      } catch (e) { /* 查不到不挡导入 */ }
 +    }));
-+    const rowHtml = parsed.rows.map(r =>
-+      '<div class="kv"><span class="k">' + bulkImport.esc(r.name || r.code) + ' · ' + r.code + '</span>'
-+      + '<span class="v">' + fmt(r.shares, 2) + ' 份 · 成本 ' + fmt(r.costNav, 4)
-+      + (r.buyDate ? ' · ' + r.buyDate : '')
-+      + ' <b style="color:' + (r.exists ? 'var(--up)' : 'var(--accent)') + '">'
-+      + (r.exists ? '更新' : '新增') + '</b></span></div>').join('');
++    // 带收益的行：按最新净值换算出成本，预览里一起显示；
++    // 换算不出来的行先标错，确认时不会导入它。
++    await Promise.all(parsed.rows.filter(r => r.gain != null).map(async r => {
++      try {
++        const c = await gainToCost(r.code, r.gain, r.shares, r.name);
++        if (c && isFinite(c.costNav) && c.costNav > 0) {
++          r.costNav = c.costNav; r.gainNav = c.nav;
++        } else {
++          r.gainError = '取不到最新净值，无法按收益换算成本';
++        }
++      } catch (e) {
++        r.gainError = '取不到最新净值，无法按收益换算成本';
++      }
++    }));
++    const rowHtml = parsed.rows.map(r => {
++      let v;
++      if (r.gain != null) {
++        v = fmt(r.shares, 2) + ' 份 · 持有收益 ' + moneyTxt(r.gain);
++        if (r.gainError) {
++          v += ' <b style="color:var(--up)">' + bulkImport.esc(r.gainError) + '</b>';
++        } else if (r.costNav != null) {
++          v += ' · 成本 ' + fmt(r.costNav, 4)
++            + ' <span style="color:var(--dim)">（由收益换算，按最新净值 '
++            + fmt(r.gainNav, 4) + '）</span>';
++        }
++      } else {
++        v = fmt(r.shares, 2) + ' 份 · 成本 ' + fmt(r.costNav, 4);
++      }
++      return '<div class="kv"><span class="k">' + bulkImport.esc(r.name || r.code) + ' · ' + r.code + '</span>'
++        + '<span class="v">' + v
++        + (r.buyDate ? ' · ' + r.buyDate : '')
++        + ' <b style="color:' + (r.exists ? 'var(--up)' : 'var(--accent)') + '">'
++        + (r.exists ? '更新' : '新增') + '</b></span></div>';
++    }).join('');
 +    const errHtml = parsed.errors.map(e =>
 +      '<div class="t-sm" style="color:var(--up);padding:4px 0">' + bulkImport.esc(e.error) + '</div>').join('');
++    // 换算失败的行不进确认列表，按钮上的只数就是实际会导入的只数
++    const okRows = parsed.rows.filter(r => r.gain == null || r.costNav != null);
 +    box.innerHTML = rowHtml + errHtml
-+      + (parsed.rows.length
++      + (okRows.length
 +        ? '<button class="btn primary" id="biOk" style="margin-top:10px">确认导入 '
-+          + parsed.rows.length + ' 只</button>'
++          + okRows.length + ' 只</button>'
 +        : '<div class="t-dim t-sm" style="padding:8px 0">没有可导入的行。</div>');
 +    const ok = document.getElementById('biOk');
-+    if (ok) ok.onclick = () => bulkImportApply(parsed.rows);
++    if (ok) ok.onclick = () => bulkImportApply(okRows);
 +  };
 +
 +  // 选文件：把文件内容读进粘贴框，再走同一套解析预览。
@@ -417,10 +2020,53 @@ index 40f6d36..6a4b078 100644
 +  };
 +}
 +
++/**
++ * 按持有收益换算成本：costNav = 当前净值 − gain / shares。
++ *
++ * 取数走 navPairOf（和 1.1.2 货币基金修正同款逻辑）：
++ * 货币基金净值恒为 1，绝不能用 lsjz 的 DWJZ（万份收益，约 0.2）
++ * 当净值。档案/净值没拉到时先拉一次；还取不到就返回 null，
++ * 调用方把该行记为失败、不导入。
++ */
++async function gainToCost(code, gain, shares, name) {
++  // 先拉档案：货币基金的判定（有没有每万份收益序列）要靠它，
++  // 档案没回来之前不能信名字、更不能信 lsjz 的 DWJZ。
++  if (!S.full[code]) {
++    try { S.full[code] = await api.fundFull(code); } catch (e) { /* ignore */ }
++  }
++  // 档案没拉到时用名字兜底（“货币/余额宝/收益宝”等字眼），
++  // 宁可把一只货币基金认出来，也不要拿万份收益当净值算。
++  if (isMoneyFund(code) || /货币|理财|现金管理|余额宝|收益宝/.test(name || '')) {
++    return { costNav: 1 - gain / shares, nav: 1 };
++  }
++  if (!S.nav[code]) {
++    try {
++      const list = await api.navHistory(code, 2);
++      if (list.length) S.nav[code] = list[0];
++    } catch (e) { /* ignore */ }
++  }
++  const pair = navPairOf(code);
++  if (!pair || !isFinite(pair.curNav) || !(pair.curNav > 0)) return null;
++  return { costNav: pair.curNav - gain / shares, nav: pair.curNav };
++}
++
 +/** 把预览通过的行写进持仓（与单只添加同一套保存逻辑）。 */
 +async function bulkImportApply(rows) {
 +  let added = 0, updated = 0;
++  const failed = [];
 +  for (const r of rows) {
++    // 按收益导入的行：保存前按最新净值换算成本（预览里算过一次，
++    // 这里再算一次为准；取不到净值或换算出的成本不合理就跳过该行）。
++    if (r.gain != null) {
++      let c = null;
++      try { c = await gainToCost(r.code, r.gain, r.shares, r.name); } catch (e) { /* ignore */ }
++      if (!c || !isFinite(c.costNav) || c.costNav <= 0) {
++        failed.push({ code: r.code, name: r.name || r.code,
++          reason: '取不到最新净值，无法按收益换算成本' });
++        continue;
++      }
++      r.costNav = c.costNav;
++    }
 +    const patch = { shares: r.shares, costNav: r.costNav,
 +      group: r.group || '默认', divMode: r.divMode || 'cash',
 +      buyDate: r.buyDate || null };
@@ -444,18 +2090,27 @@ index 40f6d36..6a4b078 100644
 +  closeSheet();
 +  await refreshNav();
 +  render();
-+  toast('已导入 ' + rows.length + ' 只（新增 ' + added + '，更新 ' + updated + '）');
++  toast('已导入 ' + (added + updated) + ' 只（新增 ' + added + '，更新 ' + updated + '）');
++  // 按收益换算失败的行没入库，在这里把原因交代清楚（toast 只显示 1.7 秒，写不下）。
++  if (failed.length) {
++    openSheet('<h3>有 ' + failed.length + ' 只未导入</h3>'
++      + failed.map(f => '<div class="kv"><span class="k">' + bulkImport.esc(f.name)
++        + ' · ' + f.code + '</span><span class="v" style="color:var(--up)">'
++        + bulkImport.esc(f.reason) + '</span></div>').join('')
++      + '<div style="color:var(--fg2);font-size:var(--fs-sm);line-height:1.7;margin:8px 0">'
++      + '可以联网后重新导入这几只，或改按成本净值导入。</div>'
++      + '<button class="btn" onclick="closeSheet()">知道了</button>');
++  }
 +}
 +
  /* ---------------- 持仓操作菜单 ---------------- */
  
  /** 长按持仓弹出的操作面板。 */
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..c136b30 100644
+index 2cc4663..4f78a6d 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+1250eb72bef4798e92e2e336fd9a9688379c4dc1d2cbb240dd822e0195d9cc8a
-\ No newline at end of file
++7296696ad54d3e82bb70697c45e9207760902de480aa85e151c554c12fc12a68
