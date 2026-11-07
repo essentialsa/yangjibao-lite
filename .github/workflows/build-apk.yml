@@ -24,8 +24,15 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      # 不用 android-actions/setup-android：它默认会装早已下架的
+      # tools 包（sdkmanager tools），在新版 SDK 仓库里直接报错。
+      # 改用 runner 自带的 SDK，只补装 AGP 8.5.2 需要的三个包。
       - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+        run: |
+          SDKMANAGER="$(ls -d $ANDROID_SDK_ROOT/cmdline-tools/*/bin/sdkmanager | head -n 1)"
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses >/dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle 8.7
         uses: gradle/actions/setup-gradle@v3
