@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..d28e119 100644
+index 6f2bb42..a0f2921 100644
 --- a/README.md
 +++ b/README.md
 @@ -70,10 +70,28 @@
@@ -22,7 +22,7 @@ index 6f2bb42..d28e119 100644
 +006491 南方中债1-3年国开行债券指数 29538.04 1.0153 2026-08-01
 +```
 +
-+也支持直接粘贴 JSON（数组，或本 App「导出数据」的 `{ holdings: [...] }` 格式），以及从 Markdown 表格直接复制过来的内容（表头、分隔行、千分位逗号自动处理）。导入前会出预览表（新增 / 更新 / 错误原因），确认后才写盘；已在持仓里的代码按「更新」处理，不会重复加。没写基金名的行会按代码联网查一次名。
++也支持直接粘贴 JSON（数组，或本 App「导出数据」的 `{ holdings: [...] }` 格式），以及从 Markdown 表格直接复制过来的内容（表头、分隔行、千分位逗号自动处理）。不想复制粘贴也可以点「选择文件」，直接选一个 JSON 或文本文件。导入前会出预览表（新增 / 更新 / 错误原因），确认后才写盘；已在持仓里的代码按「更新」处理，不会重复加。没写基金名的行会按代码联网查一次名。
 +
 +APK 由 GitHub Actions 自动打包（见 `.github/workflows/build-apk.yml`）：每次推送到 `main` 后，在仓库的 Actions 页面下载 `yjblite-debug` 产物即可。注意：debug 包签名与作者发布的 release 包不同，覆盖安装会被系统拒绝，需先在旧 App 里「导出数据」备份，再卸载旧版、装新版、进「批量导入」把导出的 JSON 粘贴回来。
 +
@@ -32,7 +32,7 @@ index 6f2bb42..d28e119 100644
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..ea6aa9b 100644
+index 58d696c..42fc431 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -41,13 +41,100 @@ index 58d696c..ea6aa9b 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 2
-+        versionName = "1.1.0"
++        versionCode = 3
++        versionName = "1.1.1"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
+diff --git a/app/src/main/java/com/yjb/lite/MainActivity.kt b/app/src/main/java/com/yjb/lite/MainActivity.kt
+index d91c09f..e691cea 100644
+--- a/app/src/main/java/com/yjb/lite/MainActivity.kt
++++ b/app/src/main/java/com/yjb/lite/MainActivity.kt
+@@ -1,21 +1,25 @@
+ package com.yjb.lite
+ 
+ import android.annotation.SuppressLint
++import android.content.Intent
+ import android.content.pm.ApplicationInfo
+ import android.content.res.Configuration
+ import android.os.Build
+ import android.os.Bundle
+ import android.os.Handler
+ import android.os.Looper
++import android.net.Uri
+ import android.util.Log
+ import android.view.ViewGroup
+ import android.webkit.ConsoleMessage
+ import android.webkit.RenderProcessGoneDetail
+ import android.webkit.WebChromeClient
+ import android.webkit.WebResourceRequest
++import android.webkit.ValueCallback
+ import android.webkit.WebView
+ import android.webkit.WebViewClient
+ import android.widget.FrameLayout
++import androidx.activity.result.contract.ActivityResultContracts
+ import androidx.appcompat.app.AppCompatActivity
+ 
+ /**
+@@ -62,6 +66,27 @@ class MainActivity : AppCompatActivity() {
+     /** 主文档加载失败时盖在 WebView 上的原生错误页（N3）。 */
+     private var errorPage: android.widget.LinearLayout? = null
+ 
++    /**
++     * WebView 里 <input type="file"> 的待回调。
++     *
++     * WebView 默认不实现文件选择器：不接 onShowFileChooser 的话，
++     * 页面里的文件选择框点了没反应。批量导入的「选择文件」就靠它。
++     */
++    private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
++
++    private val fileChooserLauncher =
++        registerForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
++            val cb = fileChooserCallback
++            fileChooserCallback = null
++            if (result.resultCode == RESULT_OK) {
++                cb?.onReceiveValue(
++                    WebChromeClient.FileChooserParams.parseResult(result.resultCode, result.data),
++                )
++            } else {
++                cb?.onReceiveValue(null)
++            }
++        }
++
+     @SuppressLint("SetJavaScriptEnabled")
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+@@ -235,6 +260,28 @@ class MainActivity : AppCompatActivity() {
+                 Log.i(TAG, "[js] " + msg.message() + " @" + msg.lineNumber())
+                 return true
+             }
++
++            override fun onShowFileChooser(
++                view: WebView?,
++                filePathCallback: ValueCallback<Array<Uri>>,
++                fileChooserParams: WebChromeClient.FileChooserParams,
++            ): Boolean {
++                // 已有未完成的选文件请求时先取消它，避免回调泄漏。
++                fileChooserCallback?.onReceiveValue(null)
++                fileChooserCallback = filePathCallback
++                val intent = Intent(Intent.ACTION_GET_CONTENT).apply {
++                    addCategory(Intent.CATEGORY_OPENABLE)
++                    type = "*/*"
++                    putExtra(Intent.EXTRA_MIME_TYPES, arrayOf("application/json", "text/plain"))
++                }
++                runCatching {
++                    fileChooserLauncher.launch(Intent.createChooser(intent, "选择文件"))
++                }.onFailure {
++                    fileChooserCallback = null
++                    filePathCallback.onReceiveValue(null)
++                }
++                return true
++            }
+         }
+     }
+ 
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..1f806ac 100644
+index 40f6d36..49131cb 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
 @@ -10368,6 +10368,7 @@ function viewSettings() {
@@ -66,7 +153,7 @@ index 40f6d36..1f806ac 100644
    });
  
    /*
-@@ -11590,6 +11592,211 @@ function askNewGroup() {
+@@ -11590,6 +11592,235 @@ function askNewGroup() {
    };
  }
  
@@ -205,10 +292,16 @@ index 40f6d36..1f806ac 100644
 +    <div style="color:var(--fg2);font-size:var(--fs-sm);line-height:1.7;margin:-6px 0 12px">
 +      一行一只，格式：<b>代码 份额 成本净值 [买入日期]</b>，空格或逗号分隔，基金名可写可不写。<br>
 +      也支持直接粘贴 JSON（数组，或本 App「导出数据」的格式）。<br>
++      不想复制粘贴也可以点下面「选择文件」，直接选一个 JSON 或文本文件。<br>
 +      例：<span style="color:var(--fg)">018738 1681.76 5.2469 2026-04-14</span></div>
 +    <textarea id="biText" placeholder="018738 1681.76 5.2469 2026-04-14&#10;006491 29538.04 1.0153 2026-08-01"
 +      style="width:100%;height:150px;background:var(--card);border:1px solid var(--line);
 +      border-radius:10px;color:var(--fg);padding:10px;font-size:var(--fs-sm)"></textarea>
++    <div style="margin-top:10px">
++      <label class="btn" for="biFile">选择文件</label>
++      <input type="file" id="biFile" accept=".json,.txt,text/plain,application/json" style="display:none">
++      <span id="biFileName" style="color:var(--fg2);font-size:var(--fs-sm);margin-left:8px"></span>
++    </div>
 +    <div id="biPreview" style="margin-top:10px"></div>
 +    <button class="btn primary" id="biParse" style="margin-top:10px">解析预览</button>
 +    <button class="btn" onclick="closeSheet()">取消</button>`);
@@ -242,6 +335,24 @@ index 40f6d36..1f806ac 100644
 +        : '<div class="t-dim t-sm" style="padding:8px 0">没有可导入的行。</div>');
 +    const ok = document.getElementById('biOk');
 +    if (ok) ok.onclick = () => bulkImportApply(parsed.rows);
++  };
++
++  // 选文件：把文件内容读进粘贴框，再走同一套解析预览。
++  // 注意：光有这个 input 还不够，App 的 WebView 必须实现
++  // onShowFileChooser 才会弹出系统选文件器（见 MainActivity）。
++  document.getElementById('biFile').onchange = (ev) => {
++    const f = ev.target.files && ev.target.files[0];
++    if (!f) return;
++    document.getElementById('biFileName').textContent = f.name;
++    const rd = new FileReader();
++    rd.onload = () => {
++      document.getElementById('biText').value = String(rd.result || '');
++      document.getElementById('biParse').click();
++    };
++    rd.onerror = () => {
++      document.getElementById('biFileName').textContent = '读取失败，请重试';
++    };
++    rd.readAsText(f);
 +  };
 +}
 +
@@ -279,11 +390,11 @@ index 40f6d36..1f806ac 100644
  
  /** 长按持仓弹出的操作面板。 */
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..903447f 100644
+index 2cc4663..24008bc 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+567463d27f62bb4671b944a6507421ec71c7eb9b4be63bcc41d4d2205da24643
++f59354a5d9dc1641310b699f1613322ee34d1118e546dd79eabf5e7d68354707
 \ No newline at end of file
