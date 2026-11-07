@@ -1,0 +1,289 @@
+diff --git a/README.md b/README.md
+index 6f2bb42..d28e119 100644
+--- a/README.md
++++ b/README.md
+@@ -70,10 +70,28 @@
+ **我的**
+ - 主题：日间 / 夜间 / 跟随系统，顶栏一键切换
+ - 运行日志、数据源自检、JSON 导出
++- **批量导入**：粘贴文本或 JSON，一次导入多只持仓（见下）
+ - **AI 校准**：自己填 API Key，用 DeepSeek 做误差归因
+ 
+ ---
+ 
++## 批量导入持仓（本 fork 新增）
++
++原版为了把安装包从 22.4MB 压到 2.1MB，删掉了 ML Kit OCR 与「截图导入持仓」，只剩一只一只手输。本 fork 补了一个不需要 OCR 的批量导入：入口在「我的 → 设置 → 数据 → 批量导入」。
++
++粘贴格式（一行一只，空格或逗号分隔，基金名可写可不写）：
++
++```
++018738 1681.76 5.2469 2026-04-14
++006491 南方中债1-3年国开行债券指数 29538.04 1.0153 2026-08-01
++```
++
++也支持直接粘贴 JSON（数组，或本 App「导出数据」的 `{ holdings: [...] }` 格式），以及从 Markdown 表格直接复制过来的内容（表头、分隔行、千分位逗号自动处理）。导入前会出预览表（新增 / 更新 / 错误原因），确认后才写盘；已在持仓里的代码按「更新」处理，不会重复加。没写基金名的行会按代码联网查一次名。
++
++APK 由 GitHub Actions 自动打包（见 `.github/workflows/build-apk.yml`）：每次推送到 `main` 后，在仓库的 Actions 页面下载 `yjblite-debug` 产物即可。注意：debug 包签名与作者发布的 release 包不同，覆盖安装会被系统拒绝，需先在旧 App 里「导出数据」备份，再卸载旧版、装新版、进「批量导入」把导出的 JSON 粘贴回来。
++
++---
++
+ ## 预估是怎么算的
+ 
+ 盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index 58d696c..ea6aa9b 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -12,8 +12,8 @@ android {
+         applicationId = "com.yjb.lite"
+         minSdk = 24
+         targetSdk = 35
+-        versionCode = 1
+-        versionName = "1.0.1"
++        versionCode = 2
++        versionName = "1.1.0"
+ 
+         // 只保留真机用的 ABI。
+         // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
+diff --git a/src/04-app.js b/src/04-app.js
+index 40f6d36..1f806ac 100644
+--- a/src/04-app.js
++++ b/src/04-app.js
+@@ -10368,6 +10368,7 @@ function viewSettings() {
+ 
+   html += setGroup("数据",
+     setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
++    + setRow("miBulkImport", "批量导入", "粘贴文本或 JSON，一次导入多只持仓")
+     + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
+       '<span style="color:var(--up)">清空</span>')
+   );
+@@ -11276,6 +11277,7 @@ function bindGlobal() {
+         <button class="btn" onclick="closeSheet()">关闭</button>`);
+       return;
+     }
++    if (e.target.closest('#miBulkImport')) { openBulkImport(); return; }
+   });
+ 
+   /*
+@@ -11590,6 +11592,211 @@ function askNewGroup() {
+   };
+ }
+ 
++/* ---------------- 批量导入持仓 ---------------- */
++
++/**
++ * 批量导入：把多只持仓一次录进来。
++ *
++ * 背景：Lite 为了把安装包从 22.4MB 压到 2.1MB，把 ML Kit OCR 和
++ * 「截图导入持仓」整段删了，只剩一只一只手输。原版养基宝的识图
++ * 同步回不来了，但「一次粘贴、多只导入」可以补回来 —— 数据
++ * 本来就是用户自己的，粘贴文本不需要任何账号与上传。
++ *
++ * 支持两种粘贴格式：
++ *   1. 文本，一行一只：代码 份额 成本净值 [买入日期]，空格或逗号分隔，
++ *      基金名可写可不写（写了会原样采用，没写就联网按代码查），
++ *      从 Markdown 表格直接复制过来也能认（表头、分隔行与千分位
++ *      逗号都会自动处理）：
++ *        018738 1681.76 5.2469 2026-04-14
++ *        006491 南方中债1-3年国开行债券指数 29538.04 1.0153 2026-08-01
++ *   2. JSON：数组，或本 App「导出数据」的那种 { holdings: [...] }，
++ *      字段名兼容 code/代码、shares/份额、costNav/成本/成本净值、
++ *      buyDate/买入日期、name/基金名。
++ * 导入前先出预览表（新增 / 更新 / 错误原因），确认后才写盘。
++ * 已在持仓里的代码按「更新」处理（覆盖份额与成本），不会重复加。
++ */
++
++const bulkImport = {
++  /** 解析粘贴内容，返回 { rows: [...], errors: [...] }。只解析，不写盘。 */
++  parse(text) {
++    const rows = [], errors = [];
++    const t = (text || '').trim();
++    if (!t) return { rows, errors };
++
++    // JSON 优先：数组，或 { holdings: [...] }（本 App 导出格式）
++    if (t[0] === '[' || t[0] === '{') {
++      try {
++        const j = JSON.parse(t);
++        const arr = Array.isArray(j) ? j
++          : (Array.isArray(j.holdings) ? j.holdings
++          : (j.code ? [j] : null));
++        if (!arr) throw new Error('JSON 里没有持仓数组');
++        arr.forEach((o, i) => {
++          const r = this.fromObject(o, i + 1);
++          (r.error ? errors : rows).push(r);
++        });
++        return { rows: this.dedupe(rows), errors };
++      } catch (e) { /* 不是合法 JSON，按文本继续解析 */ }
++    }
++
++    t.split(/\r?\n/).forEach((line, i) => {
++      const r = this.fromLine(line, i + 1);
++      if (!r) return;               // 空行 / 表头行 / 分隔行直接跳过
++      (r.error ? errors : rows).push(r);
++    });
++    return { rows: this.dedupe(rows), errors };
++  },
++
++  /** 对象形式（JSON 里的一只）→ 行；字段名中英都认。 */
++  fromObject(o, n) {
++    if (!o || typeof o !== 'object') return { error: '第 ' + n + ' 条不是对象' };
++    const code = String(o.code || o['代码'] || '').trim();
++    const shares = parseFloat(o.shares ?? o['份额'] ?? o['份']);
++    const cost = parseFloat(o.costNav ?? o.cost ?? o['成本净值'] ?? o['成本']);
++    const buyDate = this.normDate(o.buyDate || o['买入日期'] || o['买入日'] || '');
++    const name = String(o.name || o['基金名'] || o['名称'] || '').trim();
++    const group = String(o.group || o['分组'] || '').trim();
++    const divMode = o.divMode === 'reinvest' ? 'reinvest' : '';
++    const r = this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 条');
++    if (!r.error) { if (group) r.group = group; if (divMode) r.divMode = divMode; }
++    return r;
++  },
++
++  /** 文本行 → 行。 */
++  fromLine(line, n) {
++    let s = (line || '').trim();
++    if (!s) return null;
++    if (/^[\s|:\-]+$/.test(s)) return null;            // Markdown 表格分隔行
++    if (/代码/.test(s) && /份额/.test(s)) return null;  // 表头行
++    // 先按空白 / 分号 / 竖线切分；每段里再判断逗号是千分位还是分隔符：
++    // 1,681.76 这类「1~3 位 + (,三位)+」整体是千分位数字，去掉逗号；
++    // 其余含逗号的段（如 018738,1681.76）按逗号切成多个字段。
++    const parts = [];
++    for (const seg of s.split(/[\s;；|]+/).filter(Boolean)) {
++      if (/^\d{1,3}(,\d{3})+(\.\d+)?$/.test(seg)) parts.push(seg.replace(/,/g, ''));
++      else parts.push(...seg.split(/[,，、]+/).filter(Boolean));
++    }
++    const ci = parts.findIndex(p => /^\d{6}$/.test(p));
++    if (ci < 0) return { error: '第 ' + n + ' 行：找不到 6 位基金代码' };
++    const code = parts[ci];
++    // 日期先抠出来，剩下的数字按顺序是份额、成本
++    const di = parts.findIndex(p => /^\d{4}[-/.]\d{1,2}[-/.]\d{1,2}$/.test(p));
++    const buyDate = di >= 0 ? this.normDate(parts[di]) : '';
++    const nums = parts.filter((p, i) => i !== ci && i !== di
++      && /^-?\d+(\.\d+)?$/.test(p)).map(Number);
++    const shares = nums[0], cost = nums[1];
++    // 名字 = 代码之后、第一个数字之前的非数字片段
++    const name = parts.slice(ci + 1)
++      .filter((p, i) => (ci + 1 + i) !== di && !/^-?\d+(\.\d+)?$/.test(p)).join('');
++    return this.makeRow(code, shares, cost, buyDate, name, '第 ' + n + ' 行');
++  },
++
++  makeRow(code, shares, cost, buyDate, name, where) {
++    if (!/^\d{6}$/.test(code || '')) return { error: where + '：基金代码不是 6 位数字' };
++    if (!isFinite(shares) || shares <= 0) return { error: where + '（' + code + '）：份额无效' };
++    if (!isFinite(cost) || cost <= 0) return { error: where + '（' + code + '）：成本净值无效' };
++    if (buyDate && buyDate > todayStr()) return { error: where + '（' + code + '）：买入日期在未来' };
++    return { code, shares, costNav: cost, buyDate: buyDate || null, name: name || '',
++      exists: S.holdings.some(h => h.code === code) };
++  },
++
++  /** 同一只代码在粘贴内容里出现多次，以最后一次为准。 */
++  dedupe(rows) {
++    const m = new Map();
++    rows.forEach(r => m.set(r.code, r));
++    return [...m.values()];
++  },
++
++  /** 日期归一化成 YYYY-MM-DD；非法返回 ''。 */
++  normDate(v) {
++    const m = String(v || '').trim().match(/^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/);
++    if (!m) return '';
++    const d = m[1] + '-' + m[2].padStart(2, '0') + '-' + m[3].padStart(2, '0');
++    return isNaN(Date.parse(d)) ? '' : d;
++  },
++
++  esc(v) {
++    return String(v == null ? '' : v).replace(/&/g, '&amp;').replace(/</g, '&lt;')
++      .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
++  },
++};
++
++/** 打开批量导入弹层：粘贴 → 解析预览 → 确认导入。 */
++function openBulkImport() {
++  openSheet(`<h3>批量导入持仓</h3>
++    <div style="color:var(--fg2);font-size:var(--fs-sm);line-height:1.7;margin:-6px 0 12px">
++      一行一只，格式：<b>代码 份额 成本净值 [买入日期]</b>，空格或逗号分隔，基金名可写可不写。<br>
++      也支持直接粘贴 JSON（数组，或本 App「导出数据」的格式）。<br>
++      例：<span style="color:var(--fg)">018738 1681.76 5.2469 2026-04-14</span></div>
++    <textarea id="biText" placeholder="018738 1681.76 5.2469 2026-04-14&#10;006491 29538.04 1.0153 2026-08-01"
++      style="width:100%;height:150px;background:var(--card);border:1px solid var(--line);
++      border-radius:10px;color:var(--fg);padding:10px;font-size:var(--fs-sm)"></textarea>
++    <div id="biPreview" style="margin-top:10px"></div>
++    <button class="btn primary" id="biParse" style="margin-top:10px">解析预览</button>
++    <button class="btn" onclick="closeSheet()">取消</button>`);
++
++  document.getElementById('biParse').onclick = async () => {
++    const parsed = bulkImport.parse(document.getElementById('biText').value);
++    const box = document.getElementById('biPreview');
++    if (!parsed.rows.length && !parsed.errors.length) {
++      box.innerHTML = '<div class="t-dim t-sm" style="padding:8px 0">没有可解析的内容，请按上面的格式粘贴。</div>';
++      return;
++    }
++    // 没写名字的行，按代码联网查一次名（查不到就留空，导入后显示代码）
++    await Promise.all(parsed.rows.filter(r => !r.name).map(async r => {
++      try {
++        const hit = (await api.search(r.code)).find(o => o.code === r.code);
++        if (hit) r.name = hit.name;
++      } catch (e) { /* 查不到不挡导入 */ }
++    }));
++    const rowHtml = parsed.rows.map(r =>
++      '<div class="kv"><span class="k">' + bulkImport.esc(r.name || r.code) + ' · ' + r.code + '</span>'
++      + '<span class="v">' + fmt(r.shares, 2) + ' 份 · 成本 ' + fmt(r.costNav, 4)
++      + (r.buyDate ? ' · ' + r.buyDate : '')
++      + ' <b style="color:' + (r.exists ? 'var(--up)' : 'var(--accent)') + '">'
++      + (r.exists ? '更新' : '新增') + '</b></span></div>').join('');
++    const errHtml = parsed.errors.map(e =>
++      '<div class="t-sm" style="color:var(--up);padding:4px 0">' + bulkImport.esc(e.error) + '</div>').join('');
++    box.innerHTML = rowHtml + errHtml
++      + (parsed.rows.length
++        ? '<button class="btn primary" id="biOk" style="margin-top:10px">确认导入 '
++          + parsed.rows.length + ' 只</button>'
++        : '<div class="t-dim t-sm" style="padding:8px 0">没有可导入的行。</div>');
++    const ok = document.getElementById('biOk');
++    if (ok) ok.onclick = () => bulkImportApply(parsed.rows);
++  };
++}
++
++/** 把预览通过的行写进持仓（与单只添加同一套保存逻辑）。 */
++async function bulkImportApply(rows) {
++  let added = 0, updated = 0;
++  for (const r of rows) {
++    const patch = { shares: r.shares, costNav: r.costNav,
++      group: r.group || '默认', divMode: r.divMode || 'cash',
++      buyDate: r.buyDate || null };
++    if (r.name) patch.name = r.name;
++    const exist = S.holdings.find(h => h.code === r.code);
++    if (exist) {
++      Object.assign(exist, patch);
++      updated++;
++      // 更新份额时像单只编辑一样记一条今天快照，让收益率曲线不断档
++      txLog.record(r.code, todayStr(), r.shares);
++    } else {
++      S.holdings.push(Object.assign({ code: r.code, addedAt: todayStr() }, patch));
++      added++;
++      // 新持仓还没有流水：用买入日（没有就用今天）补一条基线，
++      // 历史收益才能从买入那天算起；已有流水的不动 —— 往中间插
++      // 一条过去的快照会打乱快照顺序。
++      txLog.record(r.code, r.buyDate || todayStr(), r.shares);
++    }
++  }
++  store.save();
++  closeSheet();
++  await refreshNav();
++  render();
++  toast('已导入 ' + rows.length + ' 只（新增 ' + added + '，更新 ' + updated + '）');
++}
++
+ /* ---------------- 持仓操作菜单 ---------------- */
+ 
+ /** 长按持仓弹出的操作面板。 */
+diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
+index 2cc4663..903447f 100644
+--- a/src/ORIGIN_SHA256.txt
++++ b/src/ORIGIN_SHA256.txt
+@@ -1 +1 @@
+-6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
+\ No newline at end of file
++567463d27f62bb4671b944a6507421ec71c7eb9b4be63bcc41d4d2205da24643
+\ No newline at end of file
