@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..a167a88 100644
+index 6f2bb42..0321dd0 100644
 --- a/README.md
 +++ b/README.md
-@@ -70,10 +70,67 @@
+@@ -70,10 +70,68 @@
  **我的**
  - 主题：日间 / 夜间 / 跟随系统，顶栏一键切换
  - 运行日志、数据源自检、JSON 导出
@@ -53,6 +53,7 @@ index 6f2bb42..a167a88 100644
 +
 +- **四组数**：今日收益、本月收益、本年累计收益、累计收益，每组都是金额（¥）+ 时间加权收益率（%），旁边标实际起止（比如「自 2026-04-14 起」），窗口盖不住的年份/月份不会假装算全。
 +- **柱状图**：日 / 月 / 年三档切换。日是最近 30 个交易日的每日收益，月是窗口内各自然月之和，年是各自然年之和。涨红跌绿，和 App 其余地方一致。
++- **网格**（v1.1.4 新增）：档位切换旁边多了一组「柱状图 | 网格」切换，和柱状图共用同一份数据，数字完全一致。日是日历式：按月分组，最近的月在最上面，每月一个小日历（星期头一～日），有交易数据的日子显示日期 + 当日盈亏，周末/节假日留空；月是窗口内每个月一个格子；年是每年一个格子（目前数据只有一个年份就只有一个格子）。盈利红、亏损绿、零或无数据灰。
 +
 +口径（和 TWR 曲线同一批逐日数据，不另起取数逻辑）：
 +
@@ -71,7 +72,7 @@ index 6f2bb42..a167a88 100644
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..a882f14 100644
+index 58d696c..0083397 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -80,25 +81,26 @@ index 58d696c..a882f14 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 5
-+        versionName = "1.1.3"
++        versionCode = 6
++        versionName = "1.1.4"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
 diff --git a/app/src/main/assets/index.html b/app/src/main/assets/index.html
-index c72eeee..6d5a899 100644
+index c72eeee..9115bed 100644
 --- a/app/src/main/assets/index.html
 +++ b/app/src/main/assets/index.html
-@@ -3674,6 +3674,8 @@ const S = {
+@@ -3674,6 +3674,9 @@ const S = {
    replay: {},     // code -> {score:{beta,r2}, at} 持仓回演结果，一天缓存
    perfCurve: null,// 账户历史收益率曲线
    perfDays: 60,   // 曲线区间
 +  pnlStats: null, // 收益分析聚合结果（400 个交易日窗口的日收益序列）
 +  pnlMode: 'day', // 收益分析柱状图档位：day | month | year
++  pnlView: 'bars', // 收益分析展示形式：bars 柱状图 | grid 网格
    chartRange: 60, // 净值走势图区间（交易日）
    klineScale: 5,  // K 线周期（分钟）
    perfBusy: false,
-@@ -4186,12 +4188,35 @@ const api = {
+@@ -4186,12 +4189,35 @@ const api = {
      const name = str('fS_name');
      const last = trend.length ? trend[trend.length - 1] : null;
  
@@ -134,7 +136,16 @@ index c72eeee..6d5a899 100644
        lagDays: last ? dayGap(last.date) : null,
      };
    },
-@@ -7103,6 +7128,23 @@ const FUND_TYPE_NAME = {
+@@ -7085,7 +7111,7 @@ function fundType(name, trend) {
+   const n = name || '';
+ 
+   // 货币基金：名字带货币，或单位净值长期恒为 1
+-  if (/货币|理财|现金管理|宝\b/.test(n)) return 'money';
++  if (/货币|理财|现金管理|现金添利|宝\b/.test(n)) return 'money';
+   if (trend && trend.length > 20) {
+     const tail = trend.slice(-20);
+     if (tail.every(x => Math.abs(x.nav - 1) < 1e-9)) return 'money';
+@@ -7103,6 +7129,23 @@ const FUND_TYPE_NAME = {
    index: '指数', stock: '股票', mix: '混合',
  };
  
@@ -152,13 +163,13 @@ index c72eeee..6d5a899 100644
 +  const h = S.holdings.find(x => x.code === code)
 +    || S.watch.find(x => x.code === code);
 +  const name = (h && h.name) || (full && full.name) || '';
-+  return /货币|理财|现金管理|余额宝|收益宝/.test(name);
++  return /货币|理财|现金管理|现金添利|余额宝|收益宝/.test(name);
 +}
 +
  /**
   * 计算一只持仓的真实盈亏，把分红算进去。
   *
-@@ -7564,6 +7606,8 @@ function mergeNavIntoFull(code, list) {
+@@ -7564,6 +7607,8 @@ function mergeNavIntoFull(code, list) {
  
  /** 当前价格：优先实时估值，其次最新净值，最后成本 */
  function priceOf(code, fallback) {
@@ -167,7 +178,7 @@ index c72eeee..6d5a899 100644
    const g = S.gz[code];
    if (g && g.gsz) return g.gsz;
    const q = S.nav[code];
-@@ -7594,6 +7638,13 @@ function navPairOf(code) {
+@@ -7594,6 +7639,13 @@ function navPairOf(code) {
    const q = S.nav[code];
    if (!q) return null;
  
@@ -181,7 +192,7 @@ index c72eeee..6d5a899 100644
    const full = S.full[code];
    const trend = full && full.trend && full.trend.length ? full.trend : null;
    const today = todayStr();
-@@ -10113,31 +10164,33 @@ function viewDiag() {
+@@ -10113,31 +10165,33 @@ function viewDiag() {
    html += '</div>';
    return html;
  }
@@ -230,7 +241,7 @@ index c72eeee..6d5a899 100644
    // 收集所有出现过的日期，取最近 N 个交易日
    const dateSet = Object.create(null);
    for (const h of hs) {
-@@ -10153,17 +10206,37 @@ async function buildPerfCurve(days) {
+@@ -10153,17 +10207,37 @@ async function buildPerfCurve(days) {
     * 份额不再是拿当前值一刀切，而是逐日还原：
     *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
     *   没流水 → 退化成「从起始日起一直持有现在的份额」
@@ -271,7 +282,7 @@ index c72eeee..6d5a899 100644
        from,
        fixed,
        shareAt(d) {
-@@ -10180,12 +10253,14 @@ async function buildPerfCurve(days) {
+@@ -10180,12 +10254,14 @@ async function buildPerfCurve(days) {
    const rows = [];
    const lastNav = Object.create(null);
    let prevShares = null;
@@ -286,7 +297,7 @@ index c72eeee..6d5a899 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -10202,15 +10277,79 @@ async function buildPerfCurve(days) {
+@@ -10202,15 +10278,79 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -368,7 +379,7 @@ index c72eeee..6d5a899 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -10251,11 +10390,104 @@ async function buildPerfCurve(days) {
+@@ -10251,11 +10391,104 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -475,7 +486,7 @@ index c72eeee..6d5a899 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -10321,6 +10553,92 @@ function perfChart(curve) {
+@@ -10321,6 +10554,209 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -565,10 +576,127 @@ index c72eeee..6d5a899 100644
 +  return s;
 +}
 +
++/**
++ * 把日收益序列按月分组，排成日历格子（供 pnlGrid 的日档用）。
++ *
++ * 返回按月升序的数组，每项：
++ *   { key: 'YYYY-MM', label: '2026年11月', total: 当月盈亏合计,
++ *     cells: [null(月初对齐的空格) | {day, pnl}] }
++ * 其中 pnl 为 null 表示那天没有交易数据（周末/节假日），格子留空；
++ * pnl 为数字（可正可负可为 0）表示一个交易日的盈亏。
++ * 星期用日期本身算（周一=0 … 周日=6），不硬编码。
++ */
++function pnlCalendarMonths(daily) {
++  const byMonth = Object.create(null);
++  const order = [];
++  for (const d of daily) {
++    const k = d.date.slice(0, 7);
++    if (!byMonth[k]) { byMonth[k] = Object.create(null); order.push(k); }
++    byMonth[k][d.date] = d.pnl;
++  }
++  return order.map(k => {
++    const y = +k.slice(0, 4), m = +k.slice(5, 7);
++    const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7; // 1 号是周几
++    const daysInMonth = new Date(y, m, 0).getDate();
++    const cells = [];
++    for (let i = 0; i < lead; i++) cells.push(null);
++    let total = 0;
++    for (let day = 1; day <= daysInMonth; day++) {
++      const ds = k + '-' + String(day).padStart(2, '0');
++      const pnl = byMonth[k][ds];
++      if (pnl == null) cells.push({ day, pnl: null });
++      else { cells.push({ day, pnl }); total += pnl; }
++    }
++    return { key: k, label: y + '年' + m + '月', total, cells };
++  });
++}
++
++/**
++ * 收益网格（和 pnlBars 共用同一份 stats.daily，数字完全一致）。
++ *
++ * 三档：
++ *   day   日历式：按月分组，最近的月在最上面；每月一个小日历，
++ *         有交易数据的日子显示日期 + 当日盈亏，周末/节假日留空
++ *   month 窗口内每个月一个格子（每行 3 个）
++ *   year  窗口内每年一个格子（每行 3 个）
++ *
++ * 涨用 --up、跌用 --down，和 App 其余地方一样（红涨绿跌）；
++ * 零或无数据是灰色。格子背景用 color-mix 淡淡晕一层红/绿，
++ * 老 WebView 不支持 color-mix 时声明会被丢弃，退回纯色底。
++ */
++function pnlGrid(stats, mode) {
++  if (!stats || !stats.daily.length) {
++    return "<div class=\"empty\" style=\"padding:30px\">数据不足，暂无法生成收益图</div>";
++  }
++  // 格子底色：盈利淡红、亏损淡绿、零收益纯色底
++  const cellBg = pnl => pnl == null ? ''
++    : pnl > 0 ? "background:var(--card2);background:color-mix(in srgb, var(--up) 10%, var(--card));"
++    : pnl < 0 ? "background:var(--card2);background:color-mix(in srgb, var(--down) 10%, var(--card));"
++    : "background:var(--card2);";
++
++  if (mode === 'day') {
++    const months = pnlCalendarMonths(stats.daily).slice().reverse();
++    let s = "";
++    for (const mo of months) {
++      s += "<div style=\"margin-bottom:12px\">";
++      s += "<div style=\"display:flex;justify-content:space-between;font-size:var(--fs-sm);font-weight:700;margin-bottom:6px\">"
++        + "<span>" + mo.label + "</span>"
++        + "<span class=\"" + pctCls(mo.total) + "\">" + moneyTxt(mo.total) + "</span></div>";
++      s += "<div style=\"display:grid;grid-template-columns:repeat(7,1fr);gap:4px\">";
++      for (const w of ['一', '二', '三', '四', '五', '六', '日']) {
++        s += "<div style=\"text-align:center;font-size:var(--fs-xs);color:var(--dim);padding:2px 0\">" + w + "</div>";
++      }
++      for (const c of mo.cells) {
++        if (!c) { s += "<div></div>"; continue; }
++        if (c.pnl == null) {
++          s += "<div style=\"min-height:40px;border-radius:8px;background:var(--card2);opacity:.45\"></div>";
++        } else {
++          s += "<div style=\"min-height:40px;border-radius:8px;padding:4px 1px;text-align:center;overflow:hidden;" + cellBg(c.pnl) + "\">"
++            + "<div style=\"font-size:10px;color:var(--fg2)\">" + c.day + "</div>"
++            + "<div class=\"" + pctCls(c.pnl) + "\" style=\"font-size:10px;font-weight:700;white-space:nowrap\">" + moneyTxt(c.pnl) + "</div></div>";
++        }
++      }
++      s += "</div></div>";
++    }
++    return s;
++  }
++
++  let cells = null; // [{label, pnl}]
++  if (mode === 'month') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 7);
++      if (map[k] == null) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    cells = order.map(k => ({ label: k, pnl: map[k] }));
++  } else if (mode === 'year') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 4);
++      if (map[k] == null) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    cells = order.map(k => ({ label: k + '年', pnl: map[k] }));
++  }
++  if (!cells || !cells.length) return "<div class=\"empty\" style=\"padding:30px\">本档位暂无数据</div>";
++
++  let s = "<div style=\"display:grid;grid-template-columns:repeat(3,1fr);gap:8px\">";
++  for (const c of cells) {
++    s += "<div style=\"border-radius:10px;padding:10px 6px;text-align:center;" + cellBg(c.pnl) + "\">"
++      + "<div style=\"font-size:var(--fs-xs);color:var(--dim)\">" + c.label + "</div>"
++      + "<div class=\"" + pctCls(c.pnl) + "\" style=\"font-size:var(--fs-md);font-weight:700;margin-top:2px;white-space:nowrap\">" + moneyTxt(c.pnl) + "</div></div>";
++  }
++  s += "</div>";
++  return s;
++}
++
  /**
   * 历史总资产涨跌页。
   *
-@@ -10404,19 +10722,69 @@ function viewPerf() {
+@@ -10404,19 +10840,76 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
@@ -605,7 +733,14 @@ index c72eeee..6d5a899 100644
 +      html += "<button data-pnlmode=\"" + m[0] + "\" class=\"" + (mode === m[0] ? "on" : "") + "\" style=\"flex:1\">" + m[1] + "收益</button>";
 +    }
 +    html += "</div>";
-+    html += "<div style=\"margin-top:4px\">" + pnlBars(ps, mode) + "</div>";
++    // 展示形式：柱状图 / 网格（和档位切换共用同一份数据）
++    const view = S.pnlView || 'bars';
++    html += "<div class=\"sectabs\" style=\"padding:8px 0 0\">";
++    for (const v of [['bars', '柱状图'], ['grid', '网格']]) {
++      html += "<button data-pnlview=\"" + v[0] + "\" class=\"" + (view === v[0] ? "on" : "") + "\" style=\"flex:1\">" + v[1] + "</button>";
++    }
++    html += "</div>";
++    html += "<div style=\"margin-top:4px\">" + (view === 'grid' ? pnlGrid(ps, mode) : pnlBars(ps, mode)) + "</div>";
 +    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
 +      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
 +      "百分比为时间加权收益率，剔除了加减仓的影响。<br>" +
@@ -643,7 +778,7 @@ index c72eeee..6d5a899 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -10444,6 +10812,8 @@ async function loadPerf(days) {
+@@ -10444,6 +10937,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -652,7 +787,7 @@ index c72eeee..6d5a899 100644
    S.perfBusy = false;
    render();
  }
-@@ -11704,6 +12074,7 @@ function viewSettings() {
+@@ -11704,6 +12199,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -660,7 +795,7 @@ index c72eeee..6d5a899 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -12405,6 +12776,10 @@ function bindGlobal() {
+@@ -12405,6 +12901,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -668,10 +803,14 @@ index c72eeee..6d5a899 100644
 +    const pm = e.target.closest('[data-pnlmode]');
 +    if (pm) { S.pnlMode = pm.dataset.pnlmode; render(); return; }
 +
++    // 收益分析展示形式切换（柱状图 / 网格，数据已在内存里）
++    const pv = e.target.closest('[data-pnlview]');
++    if (pv) { S.pnlView = pv.dataset.pnlview; render(); return; }
++
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -12612,6 +12987,7 @@ function bindGlobal() {
+@@ -12612,6 +13116,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -679,7 +818,7 @@ index c72eeee..6d5a899 100644
    });
  
    /*
-@@ -12926,6 +13302,372 @@ function askNewGroup() {
+@@ -12926,6 +13431,372 @@ function askNewGroup() {
    };
  }
  
@@ -982,7 +1121,7 @@ index c72eeee..6d5a899 100644
 +  }
 +  // 档案没拉到时用名字兜底（“货币/余额宝/收益宝”等字眼），
 +  // 宁可把一只货币基金认出来，也不要拿万份收益当净值算。
-+  if (isMoneyFund(code) || /货币|理财|现金管理|余额宝|收益宝/.test(name || '')) {
++  if (isMoneyFund(code) || /货币|理财|现金管理|现金添利|余额宝|收益宝/.test(name || '')) {
 +    return { costNav: 1 - gain / shares, nav: 1 };
 +  }
 +  if (!S.nav[code]) {
@@ -1140,19 +1279,20 @@ index d91c09f..e691cea 100644
      }
  
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..02d2044 100644
+index 40f6d36..ee9ef67 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
-@@ -2338,6 +2338,8 @@ const S = {
+@@ -2338,6 +2338,9 @@ const S = {
    replay: {},     // code -> {score:{beta,r2}, at} 持仓回演结果，一天缓存
    perfCurve: null,// 账户历史收益率曲线
    perfDays: 60,   // 曲线区间
 +  pnlStats: null, // 收益分析聚合结果（400 个交易日窗口的日收益序列）
 +  pnlMode: 'day', // 收益分析柱状图档位：day | month | year
++  pnlView: 'bars', // 收益分析展示形式：bars 柱状图 | grid 网格
    chartRange: 60, // 净值走势图区间（交易日）
    klineScale: 5,  // K 线周期（分钟）
    perfBusy: false,
-@@ -2850,12 +2852,35 @@ const api = {
+@@ -2850,12 +2853,35 @@ const api = {
      const name = str('fS_name');
      const last = trend.length ? trend[trend.length - 1] : null;
  
@@ -1188,7 +1328,16 @@ index 40f6d36..02d2044 100644
        lagDays: last ? dayGap(last.date) : null,
      };
    },
-@@ -5767,6 +5792,23 @@ const FUND_TYPE_NAME = {
+@@ -5749,7 +5775,7 @@ function fundType(name, trend) {
+   const n = name || '';
+ 
+   // 货币基金：名字带货币，或单位净值长期恒为 1
+-  if (/货币|理财|现金管理|宝\b/.test(n)) return 'money';
++  if (/货币|理财|现金管理|现金添利|宝\b/.test(n)) return 'money';
+   if (trend && trend.length > 20) {
+     const tail = trend.slice(-20);
+     if (tail.every(x => Math.abs(x.nav - 1) < 1e-9)) return 'money';
+@@ -5767,6 +5793,23 @@ const FUND_TYPE_NAME = {
    index: '指数', stock: '股票', mix: '混合',
  };
  
@@ -1206,13 +1355,13 @@ index 40f6d36..02d2044 100644
 +  const h = S.holdings.find(x => x.code === code)
 +    || S.watch.find(x => x.code === code);
 +  const name = (h && h.name) || (full && full.name) || '';
-+  return /货币|理财|现金管理|余额宝|收益宝/.test(name);
++  return /货币|理财|现金管理|现金添利|余额宝|收益宝/.test(name);
 +}
 +
  /**
   * 计算一只持仓的真实盈亏，把分红算进去。
   *
-@@ -6228,6 +6270,8 @@ function mergeNavIntoFull(code, list) {
+@@ -6228,6 +6271,8 @@ function mergeNavIntoFull(code, list) {
  
  /** 当前价格：优先实时估值，其次最新净值，最后成本 */
  function priceOf(code, fallback) {
@@ -1221,7 +1370,7 @@ index 40f6d36..02d2044 100644
    const g = S.gz[code];
    if (g && g.gsz) return g.gsz;
    const q = S.nav[code];
-@@ -6258,6 +6302,13 @@ function navPairOf(code) {
+@@ -6258,6 +6303,13 @@ function navPairOf(code) {
    const q = S.nav[code];
    if (!q) return null;
  
@@ -1235,7 +1384,7 @@ index 40f6d36..02d2044 100644
    const full = S.full[code];
    const trend = full && full.trend && full.trend.length ? full.trend : null;
    const today = todayStr();
-@@ -8777,31 +8828,33 @@ function viewDiag() {
+@@ -8777,31 +8829,33 @@ function viewDiag() {
    html += '</div>';
    return html;
  }
@@ -1284,7 +1433,7 @@ index 40f6d36..02d2044 100644
    // 收集所有出现过的日期，取最近 N 个交易日
    const dateSet = Object.create(null);
    for (const h of hs) {
-@@ -8817,17 +8870,37 @@ async function buildPerfCurve(days) {
+@@ -8817,17 +8871,37 @@ async function buildPerfCurve(days) {
     * 份额不再是拿当前值一刀切，而是逐日还原：
     *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
     *   没流水 → 退化成「从起始日起一直持有现在的份额」
@@ -1325,7 +1474,7 @@ index 40f6d36..02d2044 100644
        from,
        fixed,
        shareAt(d) {
-@@ -8844,12 +8917,14 @@ async function buildPerfCurve(days) {
+@@ -8844,12 +8918,14 @@ async function buildPerfCurve(days) {
    const rows = [];
    const lastNav = Object.create(null);
    let prevShares = null;
@@ -1340,7 +1489,7 @@ index 40f6d36..02d2044 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -8866,15 +8941,79 @@ async function buildPerfCurve(days) {
+@@ -8866,15 +8942,79 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -1422,7 +1571,7 @@ index 40f6d36..02d2044 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -8915,11 +9054,104 @@ async function buildPerfCurve(days) {
+@@ -8915,11 +9055,104 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -1529,7 +1678,7 @@ index 40f6d36..02d2044 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -8985,6 +9217,92 @@ function perfChart(curve) {
+@@ -8985,6 +9218,209 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -1619,10 +1768,127 @@ index 40f6d36..02d2044 100644
 +  return s;
 +}
 +
++/**
++ * 把日收益序列按月分组，排成日历格子（供 pnlGrid 的日档用）。
++ *
++ * 返回按月升序的数组，每项：
++ *   { key: 'YYYY-MM', label: '2026年11月', total: 当月盈亏合计,
++ *     cells: [null(月初对齐的空格) | {day, pnl}] }
++ * 其中 pnl 为 null 表示那天没有交易数据（周末/节假日），格子留空；
++ * pnl 为数字（可正可负可为 0）表示一个交易日的盈亏。
++ * 星期用日期本身算（周一=0 … 周日=6），不硬编码。
++ */
++function pnlCalendarMonths(daily) {
++  const byMonth = Object.create(null);
++  const order = [];
++  for (const d of daily) {
++    const k = d.date.slice(0, 7);
++    if (!byMonth[k]) { byMonth[k] = Object.create(null); order.push(k); }
++    byMonth[k][d.date] = d.pnl;
++  }
++  return order.map(k => {
++    const y = +k.slice(0, 4), m = +k.slice(5, 7);
++    const lead = (new Date(y, m - 1, 1).getDay() + 6) % 7; // 1 号是周几
++    const daysInMonth = new Date(y, m, 0).getDate();
++    const cells = [];
++    for (let i = 0; i < lead; i++) cells.push(null);
++    let total = 0;
++    for (let day = 1; day <= daysInMonth; day++) {
++      const ds = k + '-' + String(day).padStart(2, '0');
++      const pnl = byMonth[k][ds];
++      if (pnl == null) cells.push({ day, pnl: null });
++      else { cells.push({ day, pnl }); total += pnl; }
++    }
++    return { key: k, label: y + '年' + m + '月', total, cells };
++  });
++}
++
++/**
++ * 收益网格（和 pnlBars 共用同一份 stats.daily，数字完全一致）。
++ *
++ * 三档：
++ *   day   日历式：按月分组，最近的月在最上面；每月一个小日历，
++ *         有交易数据的日子显示日期 + 当日盈亏，周末/节假日留空
++ *   month 窗口内每个月一个格子（每行 3 个）
++ *   year  窗口内每年一个格子（每行 3 个）
++ *
++ * 涨用 --up、跌用 --down，和 App 其余地方一样（红涨绿跌）；
++ * 零或无数据是灰色。格子背景用 color-mix 淡淡晕一层红/绿，
++ * 老 WebView 不支持 color-mix 时声明会被丢弃，退回纯色底。
++ */
++function pnlGrid(stats, mode) {
++  if (!stats || !stats.daily.length) {
++    return "<div class=\"empty\" style=\"padding:30px\">数据不足，暂无法生成收益图</div>";
++  }
++  // 格子底色：盈利淡红、亏损淡绿、零收益纯色底
++  const cellBg = pnl => pnl == null ? ''
++    : pnl > 0 ? "background:var(--card2);background:color-mix(in srgb, var(--up) 10%, var(--card));"
++    : pnl < 0 ? "background:var(--card2);background:color-mix(in srgb, var(--down) 10%, var(--card));"
++    : "background:var(--card2);";
++
++  if (mode === 'day') {
++    const months = pnlCalendarMonths(stats.daily).slice().reverse();
++    let s = "";
++    for (const mo of months) {
++      s += "<div style=\"margin-bottom:12px\">";
++      s += "<div style=\"display:flex;justify-content:space-between;font-size:var(--fs-sm);font-weight:700;margin-bottom:6px\">"
++        + "<span>" + mo.label + "</span>"
++        + "<span class=\"" + pctCls(mo.total) + "\">" + moneyTxt(mo.total) + "</span></div>";
++      s += "<div style=\"display:grid;grid-template-columns:repeat(7,1fr);gap:4px\">";
++      for (const w of ['一', '二', '三', '四', '五', '六', '日']) {
++        s += "<div style=\"text-align:center;font-size:var(--fs-xs);color:var(--dim);padding:2px 0\">" + w + "</div>";
++      }
++      for (const c of mo.cells) {
++        if (!c) { s += "<div></div>"; continue; }
++        if (c.pnl == null) {
++          s += "<div style=\"min-height:40px;border-radius:8px;background:var(--card2);opacity:.45\"></div>";
++        } else {
++          s += "<div style=\"min-height:40px;border-radius:8px;padding:4px 1px;text-align:center;overflow:hidden;" + cellBg(c.pnl) + "\">"
++            + "<div style=\"font-size:10px;color:var(--fg2)\">" + c.day + "</div>"
++            + "<div class=\"" + pctCls(c.pnl) + "\" style=\"font-size:10px;font-weight:700;white-space:nowrap\">" + moneyTxt(c.pnl) + "</div></div>";
++        }
++      }
++      s += "</div></div>";
++    }
++    return s;
++  }
++
++  let cells = null; // [{label, pnl}]
++  if (mode === 'month') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 7);
++      if (map[k] == null) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    cells = order.map(k => ({ label: k, pnl: map[k] }));
++  } else if (mode === 'year') {
++    const map = Object.create(null);
++    const order = [];
++    for (const d of stats.daily) {
++      const k = d.date.slice(0, 4);
++      if (map[k] == null) { map[k] = 0; order.push(k); }
++      map[k] += d.pnl;
++    }
++    cells = order.map(k => ({ label: k + '年', pnl: map[k] }));
++  }
++  if (!cells || !cells.length) return "<div class=\"empty\" style=\"padding:30px\">本档位暂无数据</div>";
++
++  let s = "<div style=\"display:grid;grid-template-columns:repeat(3,1fr);gap:8px\">";
++  for (const c of cells) {
++    s += "<div style=\"border-radius:10px;padding:10px 6px;text-align:center;" + cellBg(c.pnl) + "\">"
++      + "<div style=\"font-size:var(--fs-xs);color:var(--dim)\">" + c.label + "</div>"
++      + "<div class=\"" + pctCls(c.pnl) + "\" style=\"font-size:var(--fs-md);font-weight:700;margin-top:2px;white-space:nowrap\">" + moneyTxt(c.pnl) + "</div></div>";
++  }
++  s += "</div>";
++  return s;
++}
++
  /**
   * 历史总资产涨跌页。
   *
-@@ -9068,19 +9386,69 @@ function viewPerf() {
+@@ -9068,19 +9504,76 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
@@ -1659,7 +1925,14 @@ index 40f6d36..02d2044 100644
 +      html += "<button data-pnlmode=\"" + m[0] + "\" class=\"" + (mode === m[0] ? "on" : "") + "\" style=\"flex:1\">" + m[1] + "收益</button>";
 +    }
 +    html += "</div>";
-+    html += "<div style=\"margin-top:4px\">" + pnlBars(ps, mode) + "</div>";
++    // 展示形式：柱状图 / 网格（和档位切换共用同一份数据）
++    const view = S.pnlView || 'bars';
++    html += "<div class=\"sectabs\" style=\"padding:8px 0 0\">";
++    for (const v of [['bars', '柱状图'], ['grid', '网格']]) {
++      html += "<button data-pnlview=\"" + v[0] + "\" class=\"" + (view === v[0] ? "on" : "") + "\" style=\"flex:1\">" + v[1] + "</button>";
++    }
++    html += "</div>";
++    html += "<div style=\"margin-top:4px\">" + (view === 'grid' ? pnlGrid(ps, mode) : pnlBars(ps, mode)) + "</div>";
 +    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
 +      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
 +      "百分比为时间加权收益率，剔除了加减仓的影响。<br>" +
@@ -1697,7 +1970,7 @@ index 40f6d36..02d2044 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -9108,6 +9476,8 @@ async function loadPerf(days) {
+@@ -9108,6 +9601,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -1706,7 +1979,7 @@ index 40f6d36..02d2044 100644
    S.perfBusy = false;
    render();
  }
-@@ -10368,6 +10738,7 @@ function viewSettings() {
+@@ -10368,6 +10863,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -1714,7 +1987,7 @@ index 40f6d36..02d2044 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -11069,6 +11440,10 @@ function bindGlobal() {
+@@ -11069,6 +11565,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -1722,10 +1995,14 @@ index 40f6d36..02d2044 100644
 +    const pm = e.target.closest('[data-pnlmode]');
 +    if (pm) { S.pnlMode = pm.dataset.pnlmode; render(); return; }
 +
++    // 收益分析展示形式切换（柱状图 / 网格，数据已在内存里）
++    const pv = e.target.closest('[data-pnlview]');
++    if (pv) { S.pnlView = pv.dataset.pnlview; render(); return; }
++
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -11276,6 +11651,7 @@ function bindGlobal() {
+@@ -11276,6 +11780,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -1733,7 +2010,7 @@ index 40f6d36..02d2044 100644
    });
  
    /*
-@@ -11590,6 +11966,372 @@ function askNewGroup() {
+@@ -11590,6 +12095,372 @@ function askNewGroup() {
    };
  }
  
@@ -2036,7 +2313,7 @@ index 40f6d36..02d2044 100644
 +  }
 +  // 档案没拉到时用名字兜底（“货币/余额宝/收益宝”等字眼），
 +  // 宁可把一只货币基金认出来，也不要拿万份收益当净值算。
-+  if (isMoneyFund(code) || /货币|理财|现金管理|余额宝|收益宝/.test(name || '')) {
++  if (isMoneyFund(code) || /货币|理财|现金管理|现金添利|余额宝|收益宝/.test(name || '')) {
 +    return { costNav: 1 - gain / shares, nav: 1 };
 +  }
 +  if (!S.nav[code]) {
@@ -2107,10 +2384,10 @@ index 40f6d36..02d2044 100644
  
  /** 长按持仓弹出的操作面板。 */
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..4f78a6d 100644
+index 2cc4663..2280094 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+7296696ad54d3e82bb70697c45e9207760902de480aa85e151c554c12fc12a68
++f439c77ac9bec7eceacc5ff9ae87251a91f61f67018af804cd5a226aa04d31e1
