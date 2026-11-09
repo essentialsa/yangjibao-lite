@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..139514a 100644
+index 6f2bb42..14c5f95 100644
 --- a/README.md
 +++ b/README.md
-@@ -70,10 +70,68 @@
+@@ -70,10 +70,72 @@
  **我的**
  - 主题：日间 / 夜间 / 跟随系统，顶栏一键切换
  - 运行日志、数据源自检、JSON 导出
@@ -68,10 +68,14 @@ index 6f2bb42..139514a 100644
 +
 +窗口限制：收益分析用最近 **400 个交易日**（约一年半），曲线页的 20/60/120 日档位不影响它。持仓买入日早于窗口时，累计收益只从窗口起点算起，界面会标出来。只持有货币基金时没有净值日期、拼不出交易日序列，收益分析显示数据不足——这是原版曲线的同款限制，不是回归。
 +
++### 今日收益口径（v1.1.6 新增）
++
++主屏幕和收益分析的「今日」改成同一口径：**各只基金最新净值日的收益之和**（和博时 App 的「今日」同款定义）。原来主屏幕只认「净值日期就是今天」，QDII 净值天然滞后两三天，最新净值日永远不是今天，于是 018738 常年显示 "--"、当日收益恒为 0；货币基金净值恒为 1，当日也恒为 0。现在每只基金取自己最新一条净值 vs 上一条（QDII 就是 11-06 净值 vs 11-05），货币基金算万份收益（周末滚到周一），主屏幕和网格的「今日」都调同一份数据，天然一致。盘中（今天的净值还没出）主屏幕退回原来的预估口径，网格显示最后一行——预估和已实现本来就是两回事。注意：日历格子仍按净值日期排，所以「今日」汇总（最新净值日）和 11-09 那格（净值日 11-09）是两个数，前者含 QDII 的 11-06 那笔，后者不含。
++
  ## 预估是怎么算的
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
-@@ -156,6 +214,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
+@@ -156,6 +218,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
  走 OpenAI 兼容协议，所以不止官方 API：自建代理、本地 Ollama 的 `/v1`、
  各家云厂商的兼容端点都能用。默认填的是 `deepseek-v4-flash`。
  
@@ -83,7 +87,7 @@ index 6f2bb42..139514a 100644
  
  ---
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..22c2aac 100644
+index 58d696c..45440e6 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -92,13 +96,13 @@ index 58d696c..22c2aac 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 7
-+        versionName = "1.1.5"
++        versionCode = 8
++        versionName = "1.1.6"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
 diff --git a/app/src/main/assets/index.html b/app/src/main/assets/index.html
-index c72eeee..9115bed 100644
+index c72eeee..833a110 100644
 --- a/app/src/main/assets/index.html
 +++ b/app/src/main/assets/index.html
 @@ -3674,6 +3674,9 @@ const S = {
@@ -203,7 +207,101 @@ index c72eeee..9115bed 100644
    const full = S.full[code];
    const trend = full && full.trend && full.trend.length ? full.trend : null;
    const today = todayStr();
-@@ -10113,31 +10165,33 @@ function viewDiag() {
+@@ -7633,6 +7685,17 @@ function todayPctOf(code) {
+   return (pr.curNav / pr.prevNav - 1) * 100;
+ }
+ 
++/*
++ * 单只基金的今日涨跌幅（%）：v1.1.6 优先用最新净值日口径（和主屏幕/网格的
++ * 今日汇总同一份数据），盘中（今天的净值还没出）退回原来的 todayPctOf。
++ */
++function todayPctShared(code, shared) {
++  if (shared && shared.byCode[code] && shared.byCode[code].pct != null) {
++    return shared.byCode[code].pct;
++  }
++  return todayPctOf(code);
++}
++
+ 
+ /* ---------------- 调试日志 ----------------
+  *
+@@ -9362,6 +9425,9 @@ function viewHold() {
+    */
+   let total = 0, cost = 0, todayPnl = 0, prevTotal = 0, predPnl = 0, predCovered = 0;
+   let cashDivTotal = 0, divFundCount = 0;
++  // v1.1.6：今天的净值已出时，今日收益按最新净值日算（和网格同一口径）；
++  // 盘中（shared 为 null）退回原来的预估口径。
++  const shared = todayShared();
+   for (const h of S.holdings) {
+     const c = holdCalc(h, S.full[h.code]);
+     const pair = navPairOf(h.code);
+@@ -9372,7 +9438,11 @@ function viewHold() {
+     cashDivTotal += c.cashDiv;
+     if (c.divCount) divFundCount += 1;
+ 
+-    if (pair) {
++    const sc = shared && shared.byCode[h.code];
++    if (sc) {
++      prevTotal += sc.prevValue;
++      todayPnl += sc.pnl;
++    } else if (pair) {
+       prevTotal += pair.prevNav * shares;
+       todayPnl += (pair.curNav - pair.prevNav) * shares;
+     } else {
+@@ -9479,7 +9549,7 @@ function viewHold() {
+ 
+     for (const h of list) {
+       const c = holdCalc(h, S.full[h.code]);
+-      const tp = todayPctOf(h.code);
++      const tp = todayPctShared(h.code, shared);
+       const pr = S.predict[h.code];
+       const est = pr ? pr.est : null;
+       const tn = FUND_TYPE_NAME[c.type] || '';
+@@ -9591,6 +9661,9 @@ function viewAssets() {
+ 
+   /* 汇总 */
+   let total = 0, cost = 0, todayPnl = 0, prevTotal = 0, cashDivTotal = 0, divFundCount = 0;
++  // v1.1.6：今天的净值已出时，今日收益按最新净值日算（和网格同一口径）；
++  // 盘中（shared 为 null）退回原来的预估口径。
++  const shared = todayShared();
+   for (const h of S.holdings) {
+     const c = holdCalc(h, S.full[h.code]);
+     const pair = navPairOf(h.code);
+@@ -9599,7 +9672,11 @@ function viewAssets() {
+     cost += c.principal;
+     cashDivTotal += c.cashDiv;
+     if (c.divCount) divFundCount += 1;
+-    if (pair) {
++    const sc = shared && shared.byCode[h.code];
++    if (sc) {
++      prevTotal += sc.prevValue;
++      todayPnl += sc.pnl;
++    } else if (pair) {
+       prevTotal += pair.prevNav * shares;
+       todayPnl += (pair.curNav - pair.prevNav) * shares;
+     } else {
+@@ -9750,7 +9827,7 @@ function viewAssets() {
+       + '<br>用下面的「添加基金」搜索添加</div>';
+   } else {
+     for (const x of list) {
+-      html += x._held ? assetHoldRow(x) : assetWatchRow(x);
++      html += x._held ? assetHoldRow(x, shared) : assetWatchRow(x);
+     }
+   }
+ 
+@@ -9772,9 +9849,9 @@ function viewAssets() {
+ }
+ 
+ /** 持仓行：金额 + 今日 + 收益 */
+-function assetHoldRow(h) {
++function assetHoldRow(h, shared) {
+   const c = holdCalc(h, S.full[h.code]);
+-  const tp = todayPctOf(h.code);
++  const tp = todayPctShared(h.code, shared);
+   const pr = S.predict[h.code];
+   const est = pr ? pr.est : null;
+   const tn = FUND_TYPE_NAME[c.type] || "";
+@@ -10113,57 +10190,68 @@ function viewDiag() {
    html += '</div>';
    return html;
  }
@@ -240,27 +338,46 @@ index c72eeee..9115bed 100644
 + * 返回截掉「还没持仓」的前缀后的 seq，不足 2 天返回 null。
   */
 -async function buildPerfCurve(days) {
-+function buildDailyRows(days) {
-   const N = days || 60;
-   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
-   if (!hs.length) return null;
- 
+-  const N = days || 60;
+-  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+-  if (!hs.length) return null;
+-
 -  // 基准：沪深300
 -  let bench = null;
 -  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
 -
-   // 收集所有出现过的日期，取最近 N 个交易日
-   const dateSet = Object.create(null);
-   for (const h of hs) {
-@@ -10153,17 +10207,37 @@ async function buildPerfCurve(days) {
-    * 份额不再是拿当前值一刀切，而是逐日还原：
-    *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
-    *   没流水 → 退化成「从起始日起一直持有现在的份额」
+-  // 收集所有出现过的日期，取最近 N 个交易日
+-  const dateSet = Object.create(null);
+-  for (const h of hs) {
+-    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
+-  }
+-  const dates = Object.keys(dateSet).sort();
+-  const use = dates.slice(-N);
+-  if (use.length < 5) return null;
+-
+-  /*
+-   * 每只基金：净值映射 + 「某天持有多少份额」。
+-   *
+-   * 份额不再是拿当前值一刀切，而是逐日还原：
+-   *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
+-   *   没流水 → 退化成「从起始日起一直持有现在的份额」
 -   * 起始日的取法：优先用户填的买入日，其次加入日期，
-+   * 起始日的取法：优先流水第一天，其次用户填的买入日/加入日，
-    * 最后按成本价在净值曲线上反推一个大概的日子。
-    */
-   const funds = hs.map(h => {
+-   * 最后按成本价在净值曲线上反推一个大概的日子。
+-   */
+-  const funds = hs.map(h => {
++/*
++ * 收益分析共用的「每只基金逐日取数」：净值映射 + 份额还原 + 分红/万份收益映射。
++ * buildDailyRows（逐日序列）和 latestDayPnl（最新净值日）共用这一份，
++ * 两边的「今日」才不会各算各的。
++ *
++ * 份额不再是拿当前值一刀切，而是逐日还原：
++ *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
++ *   没流水 → 退化成「从起始日起一直持有现在的份额」
++ * 起始日的取法：优先流水第一天，其次用户填的买入日/加入日，
++ * 最后按成本价在净值曲线上反推一个大概的日子。
++ */
++function pnlFunds(hs) {
++  return hs.map(h => {
      const m = Object.create(null);
      for (const t of S.full[h.code].trend) m[t.date] = t.nav;
 +    const full = S.full[h.code];
@@ -293,7 +410,31 @@ index c72eeee..9115bed 100644
        from,
        fixed,
        shareAt(d) {
-@@ -10180,12 +10254,14 @@ async function buildPerfCurve(days) {
+@@ -10172,6 +10260,23 @@ async function buildPerfCurve(days) {
+       },
+     };
+   });
++}
++
++function buildDailyRows(days) {
++  const N = days || 60;
++  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
++  if (!hs.length) return null;
++
++  // 收集所有出现过的日期，取最近 N 个交易日
++  const dateSet = Object.create(null);
++  for (const h of hs) {
++    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
++  }
++  const dates = Object.keys(dateSet).sort();
++  const use = dates.slice(-N);
++  if (use.length < 5) return null;
++
++  const funds = pnlFunds(hs);
+ 
+   /*
+    * 重建每日市值 + 当日净流入。
+@@ -10180,12 +10285,14 @@ async function buildPerfCurve(days) {
    const rows = [];
    const lastNav = Object.create(null);
    let prevShares = null;
@@ -308,7 +449,7 @@ index c72eeee..9115bed 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -10202,15 +10278,79 @@ async function buildPerfCurve(days) {
+@@ -10202,15 +10309,176 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -361,6 +502,103 @@ index c72eeee..9115bed 100644
 +  return seq;
 +}
 +
++/*
++ * 「今日」按最新净值日算（v1.1.6，主屏幕和网格共用同一份口径）。
++ *
++ * 主屏幕原来的 todayPnl 只认「净值日期就是今天」：QDII 净值天然滞后
++ * 两三天，最新净值日永远不是今天，于是 018738 常年显示 "--"、当日收
++ * 益恒为 0；货币基金净值恒为 1，当日也恒为 0——但每天万份收益是真金
++ * 白银，网格里算、主屏幕不算，两边对不上。博时 App 的「今日」就是
++ * 最新净值日的收益（11-06 净值 +0.33% 就是 +25.73），这里跟它对齐。
++ *
++ * 口径（和 buildDailyRows 同一批数据、同样的份额还原，不另起取数逻辑）：
++ *   非货币基金：(最新净值 − 上一净值) × 上一日份额 + 最新净值日的分红
++ *     份额用上一日的——和网格扣除净流入的口径一致，当天的涨跌算在
++ *     昨天持有的份上；当天新买的份是净流入，不算收益。
++ *   货币基金：(上一交易日, 最新净值日] 内的万份收益（周末滚到周一，和网格一致）
++ * 返回 null 表示数据不足。调用方在今天的净值还没出时（盘中）退回原来的预估口径。
++ */
++function latestDayPnl() {
++  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
++  if (!hs.length) return null;
++
++  // 并集日期的最后两天：决定货币基金收益的窗口（和网格最后一行一致）。
++  const dateSet = Object.create(null);
++  for (const h of hs) {
++    for (const t of S.full[h.code].trend) dateSet[t.date] = 1;
++  }
++  const dates = Object.keys(dateSet).sort();
++  if (dates.length < 2) return null;
++  const lastDate = dates[dates.length - 1];
++  const prevDate = dates[dates.length - 2];
++
++  const funds = pnlFunds(hs);
++  const byCode = Object.create(null);
++  let total = 0, prevTotal = 0;
++  for (const f of funds) {
++    if (isMoneyFund(f.code)) {
++      // 货币基金：净值恒为 1，当日收益 = 万份收益（窗口和网格最后一行一致）
++      let inc = 0;
++      let cur = nextDayStr(prevDate);
++      while (cur <= lastDate) {
++        const v = f.incMap[cur];
++        if (v != null) {
++          const sh = f.shareAt(cur);
++          if (sh) inc += sh / 10000 * v;
++        }
++        cur = nextDayStr(cur);
++      }
++      const shPrev = f.shareAt(prevDate) || 0;
++      byCode[f.code] = {
++        pnl: inc,
++        pct: shPrev ? inc / shPrev * 100 : null,
++        prevValue: shPrev,
++        date: lastDate,
++      };
++      total += inc;
++      prevTotal += shPrev;
++      continue;
++    }
++    const tr = S.full[f.code].trend;
++    if (!tr || tr.length < 2) continue;
++    const latest = tr[tr.length - 1];
++    const prev = tr[tr.length - 2];
++    const shPrev = f.shareAt(prev.date) || 0;
++    const shLast = f.shareAt(latest.date) || 0;
++    let pnl = (latest.nav - prev.nav) * shPrev;
++    const per = f.divMap[latest.date];
++    if (per) pnl += per * shLast;
++    const prevValue = prev.nav * shPrev;
++    byCode[f.code] = {
++      pnl,
++      pct: prevValue ? pnl / prevValue * 100 : null,
++      prevValue,
++      date: latest.date,
++    };
++    total += pnl;
++    prevTotal += prevValue;
++  }
++  if (!Object.keys(byCode).length) return null;
++  return {
++    date: lastDate,
++    total,
++    pct: prevTotal ? total / prevTotal * 100 : null,
++    byCode,
++  };
++}
++
++/*
++ * 主屏幕「今日」和网格「今日」共用的今日收益（v1.1.6）。
++ * 只有今天的净值已经出了（并集最新日期就是今天）才用最新净值日口径；
++ * 盘中（今天的净值还没出）返回 null，调用方退回原来的预估口径——
++ * 预估和已实现本来就是两回事，混在一起更错。
++ */
++function todayShared() {
++  const ld = latestDayPnl();
++  if (!ld || ld.date !== todayStr()) return null;
++  return ld;
++}
++
 +/* ---- 历史收益率（账户 vs 大盘） ---- */
 +
 +/**
@@ -390,7 +628,7 @@ index c72eeee..9115bed 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -10251,11 +10391,104 @@ async function buildPerfCurve(days) {
+@@ -10251,11 +10519,112 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -488,7 +726,15 @@ index c72eeee..9115bed 100644
 +function computePnlStats() {
 +  try {
 +    const seq = buildDailyRows(PNL_DAYS);
-+    return aggregatePnl(seq);
++    const st = aggregatePnl(seq);
++    if (st) {
++      // v1.1.6：今日汇总和主屏幕共用最新净值日口径（不是最后一行的日期口径）
++      const shared = todayShared();
++      if (shared) {
++        st.today = { pnl: shared.total, pct: shared.pct, date: shared.date, latestNav: true };
++      }
++    }
++    return st;
 +  } catch (e) {
 +    return null;
 +  }
@@ -497,7 +743,7 @@ index c72eeee..9115bed 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -10321,6 +10554,209 @@ function perfChart(curve) {
+@@ -10321,6 +10690,209 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -707,7 +953,7 @@ index c72eeee..9115bed 100644
  /**
   * 历史总资产涨跌页。
   *
-@@ -10404,19 +10840,76 @@ function viewPerf() {
+@@ -10404,19 +10976,78 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
@@ -722,7 +968,7 @@ index c72eeee..9115bed 100644
 +  } else {
 +    // 四组汇总：今日 / 本月 / 本年 / 累计，每组都标实际起止
 +    const cells = [
-+      { t: "今日收益", v: ps.today, sub: ps.today.date.slice(5) },
++      { t: "今日收益", v: ps.today, sub: ps.today.latestNav ? "最新净值日" : ps.today.date.slice(5) },
 +      { t: "本月收益", v: ps.month, sub: ps.month.from ? "自 " + ps.month.from.slice(5) + " 起" : ps.month.label },
 +      { t: "本年累计", v: ps.year, sub: ps.year.from ? "自 " + ps.year.from.slice(5) + " 起" : ps.year.label + "年" },
 +      { t: "累计收益", v: ps.total, sub: "自 " + ps.total.from + " 起" },
@@ -754,7 +1000,9 @@ index c72eeee..9115bed 100644
 +    html += "<div style=\"margin-top:4px\">" + (view === 'grid' ? pnlGrid(ps, mode) : pnlBars(ps, mode)) + "</div>";
 +    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
 +      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
-+      "百分比为时间加权收益率，剔除了加减仓的影响。<br>" +
++      "「今日」按各只基金最新净值日汇总（和主屏幕同一口径；QDII 净值滞后，" +
++      "最新净值日可能是前几天），日历格子按净值日期排；" +
++      "百分比为时间加权收益率，剔除了加减仓的影响（「今日」为最新净值日简单收益率）。<br>" +
 +      "窗口：" + ps.windowStart + " 至 " + ps.windowEnd + "（近 " + PNL_DAYS + " 个交易日），" +
 +      "窗口外的收益不计入。</div>";
 +  }
@@ -789,7 +1037,7 @@ index c72eeee..9115bed 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -10444,6 +10937,8 @@ async function loadPerf(days) {
+@@ -10444,6 +11075,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -798,7 +1046,7 @@ index c72eeee..9115bed 100644
    S.perfBusy = false;
    render();
  }
-@@ -11704,6 +12199,7 @@ function viewSettings() {
+@@ -11704,6 +12337,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -806,7 +1054,7 @@ index c72eeee..9115bed 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -12405,6 +12901,14 @@ function bindGlobal() {
+@@ -12405,6 +13039,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -821,7 +1069,7 @@ index c72eeee..9115bed 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -12612,6 +13116,7 @@ function bindGlobal() {
+@@ -12612,6 +13254,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -829,7 +1077,7 @@ index c72eeee..9115bed 100644
    });
  
    /*
-@@ -12926,6 +13431,372 @@ function askNewGroup() {
+@@ -12926,6 +13569,372 @@ function askNewGroup() {
    };
  }
  
@@ -1310,7 +1558,7 @@ index d91c09f..e691cea 100644
      }
  
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..ee9ef67 100644
+index 40f6d36..c459db4 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
 @@ -2338,6 +2338,9 @@ const S = {
@@ -1415,7 +1663,101 @@ index 40f6d36..ee9ef67 100644
    const full = S.full[code];
    const trend = full && full.trend && full.trend.length ? full.trend : null;
    const today = todayStr();
-@@ -8777,31 +8829,33 @@ function viewDiag() {
+@@ -6297,6 +6349,17 @@ function todayPctOf(code) {
+   return (pr.curNav / pr.prevNav - 1) * 100;
+ }
+ 
++/*
++ * 单只基金的今日涨跌幅（%）：v1.1.6 优先用最新净值日口径（和主屏幕/网格的
++ * 今日汇总同一份数据），盘中（今天的净值还没出）退回原来的 todayPctOf。
++ */
++function todayPctShared(code, shared) {
++  if (shared && shared.byCode[code] && shared.byCode[code].pct != null) {
++    return shared.byCode[code].pct;
++  }
++  return todayPctOf(code);
++}
++
+ 
+ /* ---------------- 调试日志 ----------------
+  *
+@@ -8026,6 +8089,9 @@ function viewHold() {
+    */
+   let total = 0, cost = 0, todayPnl = 0, prevTotal = 0, predPnl = 0, predCovered = 0;
+   let cashDivTotal = 0, divFundCount = 0;
++  // v1.1.6：今天的净值已出时，今日收益按最新净值日算（和网格同一口径）；
++  // 盘中（shared 为 null）退回原来的预估口径。
++  const shared = todayShared();
+   for (const h of S.holdings) {
+     const c = holdCalc(h, S.full[h.code]);
+     const pair = navPairOf(h.code);
+@@ -8036,7 +8102,11 @@ function viewHold() {
+     cashDivTotal += c.cashDiv;
+     if (c.divCount) divFundCount += 1;
+ 
+-    if (pair) {
++    const sc = shared && shared.byCode[h.code];
++    if (sc) {
++      prevTotal += sc.prevValue;
++      todayPnl += sc.pnl;
++    } else if (pair) {
+       prevTotal += pair.prevNav * shares;
+       todayPnl += (pair.curNav - pair.prevNav) * shares;
+     } else {
+@@ -8143,7 +8213,7 @@ function viewHold() {
+ 
+     for (const h of list) {
+       const c = holdCalc(h, S.full[h.code]);
+-      const tp = todayPctOf(h.code);
++      const tp = todayPctShared(h.code, shared);
+       const pr = S.predict[h.code];
+       const est = pr ? pr.est : null;
+       const tn = FUND_TYPE_NAME[c.type] || '';
+@@ -8255,6 +8325,9 @@ function viewAssets() {
+ 
+   /* 汇总 */
+   let total = 0, cost = 0, todayPnl = 0, prevTotal = 0, cashDivTotal = 0, divFundCount = 0;
++  // v1.1.6：今天的净值已出时，今日收益按最新净值日算（和网格同一口径）；
++  // 盘中（shared 为 null）退回原来的预估口径。
++  const shared = todayShared();
+   for (const h of S.holdings) {
+     const c = holdCalc(h, S.full[h.code]);
+     const pair = navPairOf(h.code);
+@@ -8263,7 +8336,11 @@ function viewAssets() {
+     cost += c.principal;
+     cashDivTotal += c.cashDiv;
+     if (c.divCount) divFundCount += 1;
+-    if (pair) {
++    const sc = shared && shared.byCode[h.code];
++    if (sc) {
++      prevTotal += sc.prevValue;
++      todayPnl += sc.pnl;
++    } else if (pair) {
+       prevTotal += pair.prevNav * shares;
+       todayPnl += (pair.curNav - pair.prevNav) * shares;
+     } else {
+@@ -8414,7 +8491,7 @@ function viewAssets() {
+       + '<br>用下面的「添加基金」搜索添加</div>';
+   } else {
+     for (const x of list) {
+-      html += x._held ? assetHoldRow(x) : assetWatchRow(x);
++      html += x._held ? assetHoldRow(x, shared) : assetWatchRow(x);
+     }
+   }
+ 
+@@ -8436,9 +8513,9 @@ function viewAssets() {
+ }
+ 
+ /** 持仓行：金额 + 今日 + 收益 */
+-function assetHoldRow(h) {
++function assetHoldRow(h, shared) {
+   const c = holdCalc(h, S.full[h.code]);
+-  const tp = todayPctOf(h.code);
++  const tp = todayPctShared(h.code, shared);
+   const pr = S.predict[h.code];
+   const est = pr ? pr.est : null;
+   const tn = FUND_TYPE_NAME[c.type] || "";
+@@ -8777,57 +8854,68 @@ function viewDiag() {
    html += '</div>';
    return html;
  }
@@ -1452,27 +1794,46 @@ index 40f6d36..ee9ef67 100644
 + * 返回截掉「还没持仓」的前缀后的 seq，不足 2 天返回 null。
   */
 -async function buildPerfCurve(days) {
-+function buildDailyRows(days) {
-   const N = days || 60;
-   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
-   if (!hs.length) return null;
- 
+-  const N = days || 60;
+-  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+-  if (!hs.length) return null;
+-
 -  // 基准：沪深300
 -  let bench = null;
 -  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
 -
-   // 收集所有出现过的日期，取最近 N 个交易日
-   const dateSet = Object.create(null);
-   for (const h of hs) {
-@@ -8817,17 +8871,37 @@ async function buildPerfCurve(days) {
-    * 份额不再是拿当前值一刀切，而是逐日还原：
-    *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
-    *   没流水 → 退化成「从起始日起一直持有现在的份额」
+-  // 收集所有出现过的日期，取最近 N 个交易日
+-  const dateSet = Object.create(null);
+-  for (const h of hs) {
+-    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
+-  }
+-  const dates = Object.keys(dateSet).sort();
+-  const use = dates.slice(-N);
+-  if (use.length < 5) return null;
+-
+-  /*
+-   * 每只基金：净值映射 + 「某天持有多少份额」。
+-   *
+-   * 份额不再是拿当前值一刀切，而是逐日还原：
+-   *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
+-   *   没流水 → 退化成「从起始日起一直持有现在的份额」
 -   * 起始日的取法：优先用户填的买入日，其次加入日期，
-+   * 起始日的取法：优先流水第一天，其次用户填的买入日/加入日，
-    * 最后按成本价在净值曲线上反推一个大概的日子。
-    */
-   const funds = hs.map(h => {
+-   * 最后按成本价在净值曲线上反推一个大概的日子。
+-   */
+-  const funds = hs.map(h => {
++/*
++ * 收益分析共用的「每只基金逐日取数」：净值映射 + 份额还原 + 分红/万份收益映射。
++ * buildDailyRows（逐日序列）和 latestDayPnl（最新净值日）共用这一份，
++ * 两边的「今日」才不会各算各的。
++ *
++ * 份额不再是拿当前值一刀切，而是逐日还原：
++ *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
++ *   没流水 → 退化成「从起始日起一直持有现在的份额」
++ * 起始日的取法：优先流水第一天，其次用户填的买入日/加入日，
++ * 最后按成本价在净值曲线上反推一个大概的日子。
++ */
++function pnlFunds(hs) {
++  return hs.map(h => {
      const m = Object.create(null);
      for (const t of S.full[h.code].trend) m[t.date] = t.nav;
 +    const full = S.full[h.code];
@@ -1505,7 +1866,31 @@ index 40f6d36..ee9ef67 100644
        from,
        fixed,
        shareAt(d) {
-@@ -8844,12 +8918,14 @@ async function buildPerfCurve(days) {
+@@ -8836,6 +8924,23 @@ async function buildPerfCurve(days) {
+       },
+     };
+   });
++}
++
++function buildDailyRows(days) {
++  const N = days || 60;
++  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
++  if (!hs.length) return null;
++
++  // 收集所有出现过的日期，取最近 N 个交易日
++  const dateSet = Object.create(null);
++  for (const h of hs) {
++    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
++  }
++  const dates = Object.keys(dateSet).sort();
++  const use = dates.slice(-N);
++  if (use.length < 5) return null;
++
++  const funds = pnlFunds(hs);
+ 
+   /*
+    * 重建每日市值 + 当日净流入。
+@@ -8844,12 +8949,14 @@ async function buildPerfCurve(days) {
    const rows = [];
    const lastNav = Object.create(null);
    let prevShares = null;
@@ -1520,7 +1905,7 @@ index 40f6d36..ee9ef67 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -8866,15 +8942,79 @@ async function buildPerfCurve(days) {
+@@ -8866,15 +8973,176 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -1573,6 +1958,103 @@ index 40f6d36..ee9ef67 100644
 +  return seq;
 +}
 +
++/*
++ * 「今日」按最新净值日算（v1.1.6，主屏幕和网格共用同一份口径）。
++ *
++ * 主屏幕原来的 todayPnl 只认「净值日期就是今天」：QDII 净值天然滞后
++ * 两三天，最新净值日永远不是今天，于是 018738 常年显示 "--"、当日收
++ * 益恒为 0；货币基金净值恒为 1，当日也恒为 0——但每天万份收益是真金
++ * 白银，网格里算、主屏幕不算，两边对不上。博时 App 的「今日」就是
++ * 最新净值日的收益（11-06 净值 +0.33% 就是 +25.73），这里跟它对齐。
++ *
++ * 口径（和 buildDailyRows 同一批数据、同样的份额还原，不另起取数逻辑）：
++ *   非货币基金：(最新净值 − 上一净值) × 上一日份额 + 最新净值日的分红
++ *     份额用上一日的——和网格扣除净流入的口径一致，当天的涨跌算在
++ *     昨天持有的份上；当天新买的份是净流入，不算收益。
++ *   货币基金：(上一交易日, 最新净值日] 内的万份收益（周末滚到周一，和网格一致）
++ * 返回 null 表示数据不足。调用方在今天的净值还没出时（盘中）退回原来的预估口径。
++ */
++function latestDayPnl() {
++  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
++  if (!hs.length) return null;
++
++  // 并集日期的最后两天：决定货币基金收益的窗口（和网格最后一行一致）。
++  const dateSet = Object.create(null);
++  for (const h of hs) {
++    for (const t of S.full[h.code].trend) dateSet[t.date] = 1;
++  }
++  const dates = Object.keys(dateSet).sort();
++  if (dates.length < 2) return null;
++  const lastDate = dates[dates.length - 1];
++  const prevDate = dates[dates.length - 2];
++
++  const funds = pnlFunds(hs);
++  const byCode = Object.create(null);
++  let total = 0, prevTotal = 0;
++  for (const f of funds) {
++    if (isMoneyFund(f.code)) {
++      // 货币基金：净值恒为 1，当日收益 = 万份收益（窗口和网格最后一行一致）
++      let inc = 0;
++      let cur = nextDayStr(prevDate);
++      while (cur <= lastDate) {
++        const v = f.incMap[cur];
++        if (v != null) {
++          const sh = f.shareAt(cur);
++          if (sh) inc += sh / 10000 * v;
++        }
++        cur = nextDayStr(cur);
++      }
++      const shPrev = f.shareAt(prevDate) || 0;
++      byCode[f.code] = {
++        pnl: inc,
++        pct: shPrev ? inc / shPrev * 100 : null,
++        prevValue: shPrev,
++        date: lastDate,
++      };
++      total += inc;
++      prevTotal += shPrev;
++      continue;
++    }
++    const tr = S.full[f.code].trend;
++    if (!tr || tr.length < 2) continue;
++    const latest = tr[tr.length - 1];
++    const prev = tr[tr.length - 2];
++    const shPrev = f.shareAt(prev.date) || 0;
++    const shLast = f.shareAt(latest.date) || 0;
++    let pnl = (latest.nav - prev.nav) * shPrev;
++    const per = f.divMap[latest.date];
++    if (per) pnl += per * shLast;
++    const prevValue = prev.nav * shPrev;
++    byCode[f.code] = {
++      pnl,
++      pct: prevValue ? pnl / prevValue * 100 : null,
++      prevValue,
++      date: latest.date,
++    };
++    total += pnl;
++    prevTotal += prevValue;
++  }
++  if (!Object.keys(byCode).length) return null;
++  return {
++    date: lastDate,
++    total,
++    pct: prevTotal ? total / prevTotal * 100 : null,
++    byCode,
++  };
++}
++
++/*
++ * 主屏幕「今日」和网格「今日」共用的今日收益（v1.1.6）。
++ * 只有今天的净值已经出了（并集最新日期就是今天）才用最新净值日口径；
++ * 盘中（今天的净值还没出）返回 null，调用方退回原来的预估口径——
++ * 预估和已实现本来就是两回事，混在一起更错。
++ */
++function todayShared() {
++  const ld = latestDayPnl();
++  if (!ld || ld.date !== todayStr()) return null;
++  return ld;
++}
++
 +/* ---- 历史收益率（账户 vs 大盘） ---- */
 +
 +/**
@@ -1602,7 +2084,7 @@ index 40f6d36..ee9ef67 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -8915,11 +9055,104 @@ async function buildPerfCurve(days) {
+@@ -8915,11 +9183,112 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -1700,7 +2182,15 @@ index 40f6d36..ee9ef67 100644
 +function computePnlStats() {
 +  try {
 +    const seq = buildDailyRows(PNL_DAYS);
-+    return aggregatePnl(seq);
++    const st = aggregatePnl(seq);
++    if (st) {
++      // v1.1.6：今日汇总和主屏幕共用最新净值日口径（不是最后一行的日期口径）
++      const shared = todayShared();
++      if (shared) {
++        st.today = { pnl: shared.total, pct: shared.pct, date: shared.date, latestNav: true };
++      }
++    }
++    return st;
 +  } catch (e) {
 +    return null;
 +  }
@@ -1709,7 +2199,7 @@ index 40f6d36..ee9ef67 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -8985,6 +9218,209 @@ function perfChart(curve) {
+@@ -8985,6 +9354,209 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -1919,7 +2409,7 @@ index 40f6d36..ee9ef67 100644
  /**
   * 历史总资产涨跌页。
   *
-@@ -9068,19 +9504,76 @@ function viewPerf() {
+@@ -9068,19 +9640,78 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
@@ -1934,7 +2424,7 @@ index 40f6d36..ee9ef67 100644
 +  } else {
 +    // 四组汇总：今日 / 本月 / 本年 / 累计，每组都标实际起止
 +    const cells = [
-+      { t: "今日收益", v: ps.today, sub: ps.today.date.slice(5) },
++      { t: "今日收益", v: ps.today, sub: ps.today.latestNav ? "最新净值日" : ps.today.date.slice(5) },
 +      { t: "本月收益", v: ps.month, sub: ps.month.from ? "自 " + ps.month.from.slice(5) + " 起" : ps.month.label },
 +      { t: "本年累计", v: ps.year, sub: ps.year.from ? "自 " + ps.year.from.slice(5) + " 起" : ps.year.label + "年" },
 +      { t: "累计收益", v: ps.total, sub: "自 " + ps.total.from + " 起" },
@@ -1966,7 +2456,9 @@ index 40f6d36..ee9ef67 100644
 +    html += "<div style=\"margin-top:4px\">" + (view === 'grid' ? pnlGrid(ps, mode) : pnlBars(ps, mode)) + "</div>";
 +    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
 +      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
-+      "百分比为时间加权收益率，剔除了加减仓的影响。<br>" +
++      "「今日」按各只基金最新净值日汇总（和主屏幕同一口径；QDII 净值滞后，" +
++      "最新净值日可能是前几天），日历格子按净值日期排；" +
++      "百分比为时间加权收益率，剔除了加减仓的影响（「今日」为最新净值日简单收益率）。<br>" +
 +      "窗口：" + ps.windowStart + " 至 " + ps.windowEnd + "（近 " + PNL_DAYS + " 个交易日），" +
 +      "窗口外的收益不计入。</div>";
 +  }
@@ -2001,7 +2493,7 @@ index 40f6d36..ee9ef67 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -9108,6 +9601,8 @@ async function loadPerf(days) {
+@@ -9108,6 +9739,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -2010,7 +2502,7 @@ index 40f6d36..ee9ef67 100644
    S.perfBusy = false;
    render();
  }
-@@ -10368,6 +10863,7 @@ function viewSettings() {
+@@ -10368,6 +11001,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -2018,7 +2510,7 @@ index 40f6d36..ee9ef67 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -11069,6 +11565,14 @@ function bindGlobal() {
+@@ -11069,6 +11703,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -2033,7 +2525,7 @@ index 40f6d36..ee9ef67 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -11276,6 +11780,7 @@ function bindGlobal() {
+@@ -11276,6 +11918,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -2041,7 +2533,7 @@ index 40f6d36..ee9ef67 100644
    });
  
    /*
-@@ -11590,6 +12095,372 @@ function askNewGroup() {
+@@ -11590,6 +12233,372 @@ function askNewGroup() {
    };
  }
  
@@ -2415,10 +2907,10 @@ index 40f6d36..ee9ef67 100644
  
  /** 长按持仓弹出的操作面板。 */
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..2280094 100644
+index 2cc4663..b9696dd 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+f439c77ac9bec7eceacc5ff9ae87251a91f61f67018af804cd5a226aa04d31e1
++2df4f3fe5da780073e04db93ff5828f213f4aefe5a05ff1b2ab9c0297a8b89c5
