@@ -1,5 +1,5 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..0321dd0 100644
+index 6f2bb42..139514a 100644
 --- a/README.md
 +++ b/README.md
 @@ -70,10 +70,68 @@
@@ -71,8 +71,19 @@ index 6f2bb42..0321dd0 100644
  ## 预估是怎么算的
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
+@@ -156,6 +214,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
+ 走 OpenAI 兼容协议，所以不止官方 API：自建代理、本地 Ollama 的 `/v1`、
+ 各家云厂商的兼容端点都能用。默认填的是 `deepseek-v4-flash`。
+ 
++（本 fork v1.1.5 新增）原生 POST 白名单除商汤 SenseNova 外，也放行 DeepSeek
++官方 API（`api.deepseek.com`）。注意接口地址要填完整路径，例如
++`https://api.deepseek.com/chat/completions`，只填域名根地址会返回 404。
++
+ Key 只存在你手机的本地库里，不上传、不外发。
+ 
+ ---
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..0083397 100644
+index 58d696c..22c2aac 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -81,8 +92,8 @@ index 58d696c..0083397 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 6
-+        versionName = "1.1.4"
++        versionCode = 7
++        versionName = "1.1.5"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
@@ -1191,6 +1202,26 @@ index c72eeee..9115bed 100644
  /* ---------------- 持仓操作菜单 ---------------- */
  
  /** 长按持仓弹出的操作面板。 */
+diff --git a/app/src/main/java/com/yjb/lite/JsBridge.kt b/app/src/main/java/com/yjb/lite/JsBridge.kt
+index dbed8bc..758506c 100644
+--- a/app/src/main/java/com/yjb/lite/JsBridge.kt
++++ b/app/src/main/java/com/yjb/lite/JsBridge.kt
+@@ -342,8 +342,13 @@ class JsBridge(
+         }
+     }
+ 
+-    private fun isAllowedPost(url: String): Boolean =
+-        url.startsWith("https://token.sensenova.cn/")
++    private fun isAllowedPost(url: String): Boolean {
++        // 只放行这两个 host：商汤 SenseNova（默认）和 DeepSeek 官方 API。
++        // 按 host 精确匹配，避免 startsWith 把子域名（如 api.deepseek.com.evil.com）也放进来。
++        val uri = runCatching { java.net.URI(url) }.getOrNull() ?: return false
++        if (uri.scheme != "https") return false
++        return uri.host == "token.sensenova.cn" || uri.host == "api.deepseek.com"
++    }
+ 
+     private fun postJson(url: String, body: String, auth: String): String {
+         val b = Request.Builder()
 diff --git a/app/src/main/java/com/yjb/lite/MainActivity.kt b/app/src/main/java/com/yjb/lite/MainActivity.kt
 index d91c09f..e691cea 100644
 --- a/app/src/main/java/com/yjb/lite/MainActivity.kt
