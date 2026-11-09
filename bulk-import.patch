@@ -1,8 +1,8 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..14c5f95 100644
+index 6f2bb42..409aea6 100644
 --- a/README.md
 +++ b/README.md
-@@ -70,10 +70,72 @@
+@@ -70,10 +70,73 @@
  **我的**
  - 主题：日间 / 夜间 / 跟随系统，顶栏一键切换
  - 运行日志、数据源自检、JSON 导出
@@ -65,6 +65,7 @@ index 6f2bb42..14c5f95 100644
 +- 分红要加回来：分红当天净值被除息砸下去，不加回会把分红算成一天的亏损。现金分红和红利再投都按「每份分红 × 当日份额」加回（红利再投的份额在 App 里是静态的，不加回同样会虚亏）。
 +- 货币基金按净值 1 计入市值（见上节），当日收益按「份额 / 10000 × 万份收益」算；万份收益是自然日口径，周末两天的收益在周一那根柱子里一并算进来。
 +- 百分比是时间加权收益率：把区间内每日的 `收益 / 上一日市值` 连乘，剔除了中途加减仓的影响。直接用「收益 / 期初市值」会在年内有大额加仓时严重失真。
++- **滞后净值算到今天（v1.1.7 新增）**：QDII 最新一条净值比并集最新日滞后时（比如 11-06 的净值、今天是 11-09），这条净值的涨跌算在今天那格，不算在净值日那格——净值是今天才公布的，账户也是今天才涨的。做法是把该基金最新净值日的净值压回上一条，到并集最新日才放出来，同日的分红也一起挪过去。本月/本年/累计合计不变（这笔钱只是在 11-06 那格和今天那格之间挪了位置），但今天那格从此等于主屏幕的今日收益，不再是两套数。
 +
 +窗口限制：收益分析用最近 **400 个交易日**（约一年半），曲线页的 20/60/120 日档位不影响它。持仓买入日早于窗口时，累计收益只从窗口起点算起，界面会标出来。只持有货币基金时没有净值日期、拼不出交易日序列，收益分析显示数据不足——这是原版曲线的同款限制，不是回归。
 +
@@ -75,7 +76,7 @@ index 6f2bb42..14c5f95 100644
  ## 预估是怎么算的
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
-@@ -156,6 +218,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
+@@ -156,6 +219,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
  走 OpenAI 兼容协议，所以不止官方 API：自建代理、本地 Ollama 的 `/v1`、
  各家云厂商的兼容端点都能用。默认填的是 `deepseek-v4-flash`。
  
@@ -87,7 +88,7 @@ index 6f2bb42..14c5f95 100644
  
  ---
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..45440e6 100644
+index 58d696c..5587f54 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -96,13 +97,13 @@ index 58d696c..45440e6 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 8
-+        versionName = "1.1.6"
++        versionCode = 9
++        versionName = "1.1.7"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
 diff --git a/app/src/main/assets/index.html b/app/src/main/assets/index.html
-index c72eeee..833a110 100644
+index c72eeee..082f7b0 100644
 --- a/app/src/main/assets/index.html
 +++ b/app/src/main/assets/index.html
 @@ -3674,6 +3674,9 @@ const S = {
@@ -301,7 +302,7 @@ index c72eeee..833a110 100644
    const pr = S.predict[h.code];
    const est = pr ? pr.est : null;
    const tn = FUND_TYPE_NAME[c.type] || "";
-@@ -10113,57 +10190,68 @@ function viewDiag() {
+@@ -10113,31 +10190,83 @@ function viewDiag() {
    html += '</div>';
    return html;
  }
@@ -338,33 +339,6 @@ index c72eeee..833a110 100644
 + * 返回截掉「还没持仓」的前缀后的 seq，不足 2 天返回 null。
   */
 -async function buildPerfCurve(days) {
--  const N = days || 60;
--  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
--  if (!hs.length) return null;
--
--  // 基准：沪深300
--  let bench = null;
--  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
--
--  // 收集所有出现过的日期，取最近 N 个交易日
--  const dateSet = Object.create(null);
--  for (const h of hs) {
--    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
--  }
--  const dates = Object.keys(dateSet).sort();
--  const use = dates.slice(-N);
--  if (use.length < 5) return null;
--
--  /*
--   * 每只基金：净值映射 + 「某天持有多少份额」。
--   *
--   * 份额不再是拿当前值一刀切，而是逐日还原：
--   *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
--   *   没流水 → 退化成「从起始日起一直持有现在的份额」
--   * 起始日的取法：优先用户填的买入日，其次加入日期，
--   * 最后按成本价在净值曲线上反推一个大概的日子。
--   */
--  const funds = hs.map(h => {
 +/*
 + * 收益分析共用的「每只基金逐日取数」：净值映射 + 份额还原 + 分红/万份收益映射。
 + * buildDailyRows（逐日序列）和 latestDayPnl（最新净值日）共用这一份，
@@ -378,8 +352,8 @@ index c72eeee..833a110 100644
 + */
 +function pnlFunds(hs) {
 +  return hs.map(h => {
-     const m = Object.create(null);
-     for (const t of S.full[h.code].trend) m[t.date] = t.nav;
++    const m = Object.create(null);
++    for (const t of S.full[h.code].trend) m[t.date] = t.nav;
 +    const full = S.full[h.code];
 +    /*
 +     * 当日分红（每份派多少钱）：分红当天净值会被除息砸下去，
@@ -399,42 +373,90 @@ index c72eeee..833a110 100644
 +    if (full && full.millionIncome) {
 +      for (const mi of full.millionIncome) incMap[mi.date] = mi.val;
 +    }
-     const fixed = +h.shares || 0;
--    const from = txLog.firstDate(h.code) || inferStartDate(h, S.full[h.code]);
++    const fixed = +h.shares || 0;
 +    const from = txLog.firstDate(h.code) || h.buyDate || h.addedAt
 +      || inferStartDate(h, S.full[h.code]);
-     return {
-       code: h.code,
--      m,
++    return {
++      code: h.code,
 +      m, divMap, incMap,
-       from,
-       fixed,
-       shareAt(d) {
-@@ -10172,6 +10260,23 @@ async function buildPerfCurve(days) {
-       },
-     };
-   });
++      from,
++      fixed,
++      shareAt(d) {
++        if (txLog.has(this.code)) return txLog.sharesAt(this.code, d) || 0;
++        return (this.from && d >= this.from) ? this.fixed : 0;
++      },
++    };
++  });
 +}
 +
 +function buildDailyRows(days) {
-+  const N = days || 60;
-+  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
-+  if (!hs.length) return null;
-+
-+  // 收集所有出现过的日期，取最近 N 个交易日
-+  const dateSet = Object.create(null);
-+  for (const h of hs) {
-+    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
-+  }
-+  const dates = Object.keys(dateSet).sort();
-+  const use = dates.slice(-N);
-+  if (use.length < 5) return null;
-+
+   const N = days || 60;
+   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+   if (!hs.length) return null;
+ 
+-  // 基准：沪深300
+-  let bench = null;
+-  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
+-
+   // 收集所有出现过的日期，取最近 N 个交易日
+   const dateSet = Object.create(null);
+   for (const h of hs) {
+@@ -10147,31 +10276,31 @@ async function buildPerfCurve(days) {
+   const use = dates.slice(-N);
+   if (use.length < 5) return null;
+ 
 +  const funds = pnlFunds(hs);
++
+   /*
+-   * 每只基金：净值映射 + 「某天持有多少份额」。
+-   *
+-   * 份额不再是拿当前值一刀切，而是逐日还原：
+-   *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
+-   *   没流水 → 退化成「从起始日起一直持有现在的份额」
+-   * 起始日的取法：优先用户填的买入日，其次加入日期，
+-   * 最后按成本价在净值曲线上反推一个大概的日子。
++   * v1.1.7：最新净值滞后的基金（QDII），把最新一条净值的涨跌算到并集最新日
++   * （今天），而不是净值日——净值是今天才公布的，账户也是今天才涨的。
++   * 做法：把该基金最新净值日的净值压回上一条，到并集最新日才放出来；
++   * 同日的分红也一起挪过去。本月/本年/累计合计不变（这笔钱只是在
++   * 11-06 那格和今天那格之间挪了位置），但今天那格从此等于主屏幕
++   * 的今日收益，不再是两套数。
+    */
+-  const funds = hs.map(h => {
+-    const m = Object.create(null);
+-    for (const t of S.full[h.code].trend) m[t.date] = t.nav;
+-    const fixed = +h.shares || 0;
+-    const from = txLog.firstDate(h.code) || inferStartDate(h, S.full[h.code]);
+-    return {
+-      code: h.code,
+-      m,
+-      from,
+-      fixed,
+-      shareAt(d) {
+-        if (txLog.has(this.code)) return txLog.sharesAt(this.code, d) || 0;
+-        return (this.from && d >= this.from) ? this.fixed : 0;
+-      },
+-    };
+-  });
++  const lastDate = use[use.length - 1];
++  for (const f of funds) {
++    if (isMoneyFund(f.code)) continue;
++    const tr = S.full[f.code].trend;
++    if (!tr || tr.length < 2) continue;
++    const L = tr[tr.length - 1].date;
++    if (L >= lastDate) continue;
++    const P = tr[tr.length - 2];
++    f.m[L] = P.nav;
++    f.m[lastDate] = tr[tr.length - 1].nav;
++    if (f.divMap[L] != null) {
++      f.divMap[lastDate] = (f.divMap[lastDate] || 0) + f.divMap[L];
++      delete f.divMap[L];
++    }
++  }
  
    /*
     * 重建每日市值 + 当日净流入。
-@@ -10180,12 +10285,14 @@ async function buildPerfCurve(days) {
+@@ -10180,12 +10309,14 @@ async function buildPerfCurve(days) {
    const rows = [];
    const lastNav = Object.create(null);
    let prevShares = null;
@@ -449,7 +471,7 @@ index c72eeee..833a110 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -10202,15 +10309,176 @@ async function buildPerfCurve(days) {
+@@ -10202,15 +10333,176 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -628,7 +650,7 @@ index c72eeee..833a110 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -10251,11 +10519,112 @@ async function buildPerfCurve(days) {
+@@ -10251,11 +10543,112 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -743,7 +765,7 @@ index c72eeee..833a110 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -10321,6 +10690,209 @@ function perfChart(curve) {
+@@ -10321,6 +10714,209 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -953,7 +975,7 @@ index c72eeee..833a110 100644
  /**
   * 历史总资产涨跌页。
   *
-@@ -10404,19 +10976,78 @@ function viewPerf() {
+@@ -10404,19 +11000,78 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
@@ -1037,7 +1059,7 @@ index c72eeee..833a110 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -10444,6 +11075,8 @@ async function loadPerf(days) {
+@@ -10444,6 +11099,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -1046,7 +1068,7 @@ index c72eeee..833a110 100644
    S.perfBusy = false;
    render();
  }
-@@ -11704,6 +12337,7 @@ function viewSettings() {
+@@ -11704,6 +12361,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -1054,7 +1076,7 @@ index c72eeee..833a110 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -12405,6 +13039,14 @@ function bindGlobal() {
+@@ -12405,6 +13063,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -1069,7 +1091,7 @@ index c72eeee..833a110 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -12612,6 +13254,7 @@ function bindGlobal() {
+@@ -12612,6 +13278,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -1077,7 +1099,7 @@ index c72eeee..833a110 100644
    });
  
    /*
-@@ -12926,6 +13569,372 @@ function askNewGroup() {
+@@ -12926,6 +13593,372 @@ function askNewGroup() {
    };
  }
  
@@ -1558,7 +1580,7 @@ index d91c09f..e691cea 100644
      }
  
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..c459db4 100644
+index 40f6d36..42b210b 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
 @@ -2338,6 +2338,9 @@ const S = {
@@ -1757,7 +1779,7 @@ index 40f6d36..c459db4 100644
    const pr = S.predict[h.code];
    const est = pr ? pr.est : null;
    const tn = FUND_TYPE_NAME[c.type] || "";
-@@ -8777,57 +8854,68 @@ function viewDiag() {
+@@ -8777,31 +8854,83 @@ function viewDiag() {
    html += '</div>';
    return html;
  }
@@ -1794,33 +1816,6 @@ index 40f6d36..c459db4 100644
 + * 返回截掉「还没持仓」的前缀后的 seq，不足 2 天返回 null。
   */
 -async function buildPerfCurve(days) {
--  const N = days || 60;
--  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
--  if (!hs.length) return null;
--
--  // 基准：沪深300
--  let bench = null;
--  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
--
--  // 收集所有出现过的日期，取最近 N 个交易日
--  const dateSet = Object.create(null);
--  for (const h of hs) {
--    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
--  }
--  const dates = Object.keys(dateSet).sort();
--  const use = dates.slice(-N);
--  if (use.length < 5) return null;
--
--  /*
--   * 每只基金：净值映射 + 「某天持有多少份额」。
--   *
--   * 份额不再是拿当前值一刀切，而是逐日还原：
--   *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
--   *   没流水 → 退化成「从起始日起一直持有现在的份额」
--   * 起始日的取法：优先用户填的买入日，其次加入日期，
--   * 最后按成本价在净值曲线上反推一个大概的日子。
--   */
--  const funds = hs.map(h => {
 +/*
 + * 收益分析共用的「每只基金逐日取数」：净值映射 + 份额还原 + 分红/万份收益映射。
 + * buildDailyRows（逐日序列）和 latestDayPnl（最新净值日）共用这一份，
@@ -1834,8 +1829,8 @@ index 40f6d36..c459db4 100644
 + */
 +function pnlFunds(hs) {
 +  return hs.map(h => {
-     const m = Object.create(null);
-     for (const t of S.full[h.code].trend) m[t.date] = t.nav;
++    const m = Object.create(null);
++    for (const t of S.full[h.code].trend) m[t.date] = t.nav;
 +    const full = S.full[h.code];
 +    /*
 +     * 当日分红（每份派多少钱）：分红当天净值会被除息砸下去，
@@ -1855,42 +1850,90 @@ index 40f6d36..c459db4 100644
 +    if (full && full.millionIncome) {
 +      for (const mi of full.millionIncome) incMap[mi.date] = mi.val;
 +    }
-     const fixed = +h.shares || 0;
--    const from = txLog.firstDate(h.code) || inferStartDate(h, S.full[h.code]);
++    const fixed = +h.shares || 0;
 +    const from = txLog.firstDate(h.code) || h.buyDate || h.addedAt
 +      || inferStartDate(h, S.full[h.code]);
-     return {
-       code: h.code,
--      m,
++    return {
++      code: h.code,
 +      m, divMap, incMap,
-       from,
-       fixed,
-       shareAt(d) {
-@@ -8836,6 +8924,23 @@ async function buildPerfCurve(days) {
-       },
-     };
-   });
++      from,
++      fixed,
++      shareAt(d) {
++        if (txLog.has(this.code)) return txLog.sharesAt(this.code, d) || 0;
++        return (this.from && d >= this.from) ? this.fixed : 0;
++      },
++    };
++  });
 +}
 +
 +function buildDailyRows(days) {
-+  const N = days || 60;
-+  const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
-+  if (!hs.length) return null;
-+
-+  // 收集所有出现过的日期，取最近 N 个交易日
-+  const dateSet = Object.create(null);
-+  for (const h of hs) {
-+    for (const t of S.full[h.code].trend.slice(-(N + 20))) dateSet[t.date] = 1;
-+  }
-+  const dates = Object.keys(dateSet).sort();
-+  const use = dates.slice(-N);
-+  if (use.length < 5) return null;
-+
+   const N = days || 60;
+   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
+   if (!hs.length) return null;
+ 
+-  // 基准：沪深300
+-  let bench = null;
+-  try { bench = await api.indexHistory("sh000300", N + 10); } catch (e) { bench = null; }
+-
+   // 收集所有出现过的日期，取最近 N 个交易日
+   const dateSet = Object.create(null);
+   for (const h of hs) {
+@@ -8811,31 +8940,31 @@ async function buildPerfCurve(days) {
+   const use = dates.slice(-N);
+   if (use.length < 5) return null;
+ 
 +  const funds = pnlFunds(hs);
++
+   /*
+-   * 每只基金：净值映射 + 「某天持有多少份额」。
+-   *
+-   * 份额不再是拿当前值一刀切，而是逐日还原：
+-   *   有流水 → txLog.sharesAt()，加仓/减仓/清仓都反映得出来
+-   *   没流水 → 退化成「从起始日起一直持有现在的份额」
+-   * 起始日的取法：优先用户填的买入日，其次加入日期，
+-   * 最后按成本价在净值曲线上反推一个大概的日子。
++   * v1.1.7：最新净值滞后的基金（QDII），把最新一条净值的涨跌算到并集最新日
++   * （今天），而不是净值日——净值是今天才公布的，账户也是今天才涨的。
++   * 做法：把该基金最新净值日的净值压回上一条，到并集最新日才放出来；
++   * 同日的分红也一起挪过去。本月/本年/累计合计不变（这笔钱只是在
++   * 11-06 那格和今天那格之间挪了位置），但今天那格从此等于主屏幕
++   * 的今日收益，不再是两套数。
+    */
+-  const funds = hs.map(h => {
+-    const m = Object.create(null);
+-    for (const t of S.full[h.code].trend) m[t.date] = t.nav;
+-    const fixed = +h.shares || 0;
+-    const from = txLog.firstDate(h.code) || inferStartDate(h, S.full[h.code]);
+-    return {
+-      code: h.code,
+-      m,
+-      from,
+-      fixed,
+-      shareAt(d) {
+-        if (txLog.has(this.code)) return txLog.sharesAt(this.code, d) || 0;
+-        return (this.from && d >= this.from) ? this.fixed : 0;
+-      },
+-    };
+-  });
++  const lastDate = use[use.length - 1];
++  for (const f of funds) {
++    if (isMoneyFund(f.code)) continue;
++    const tr = S.full[f.code].trend;
++    if (!tr || tr.length < 2) continue;
++    const L = tr[tr.length - 1].date;
++    if (L >= lastDate) continue;
++    const P = tr[tr.length - 2];
++    f.m[L] = P.nav;
++    f.m[lastDate] = tr[tr.length - 1].nav;
++    if (f.divMap[L] != null) {
++      f.divMap[lastDate] = (f.divMap[lastDate] || 0) + f.divMap[L];
++      delete f.divMap[L];
++    }
++  }
  
    /*
     * 重建每日市值 + 当日净流入。
-@@ -8844,12 +8949,14 @@ async function buildPerfCurve(days) {
+@@ -8844,12 +8973,14 @@ async function buildPerfCurve(days) {
    const rows = [];
    const lastNav = Object.create(null);
    let prevShares = null;
@@ -1905,7 +1948,7 @@ index 40f6d36..c459db4 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -8866,15 +8973,176 @@ async function buildPerfCurve(days) {
+@@ -8866,15 +8997,176 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -2084,7 +2127,7 @@ index 40f6d36..c459db4 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -8915,11 +9183,112 @@ async function buildPerfCurve(days) {
+@@ -8915,11 +9207,112 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -2199,7 +2242,7 @@ index 40f6d36..c459db4 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -8985,6 +9354,209 @@ function perfChart(curve) {
+@@ -8985,6 +9378,209 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -2409,7 +2452,7 @@ index 40f6d36..c459db4 100644
  /**
   * 历史总资产涨跌页。
   *
-@@ -9068,19 +9640,78 @@ function viewPerf() {
+@@ -9068,19 +9664,78 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
@@ -2493,7 +2536,7 @@ index 40f6d36..c459db4 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -9108,6 +9739,8 @@ async function loadPerf(days) {
+@@ -9108,6 +9763,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -2502,7 +2545,7 @@ index 40f6d36..c459db4 100644
    S.perfBusy = false;
    render();
  }
-@@ -10368,6 +11001,7 @@ function viewSettings() {
+@@ -10368,6 +11025,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -2510,7 +2553,7 @@ index 40f6d36..c459db4 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -11069,6 +11703,14 @@ function bindGlobal() {
+@@ -11069,6 +11727,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -2525,7 +2568,7 @@ index 40f6d36..c459db4 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -11276,6 +11918,7 @@ function bindGlobal() {
+@@ -11276,6 +11942,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -2533,7 +2576,7 @@ index 40f6d36..c459db4 100644
    });
  
    /*
-@@ -11590,6 +12233,372 @@ function askNewGroup() {
+@@ -11590,6 +12257,372 @@ function askNewGroup() {
    };
  }
  
@@ -2907,10 +2950,10 @@ index 40f6d36..c459db4 100644
  
  /** 长按持仓弹出的操作面板。 */
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..b9696dd 100644
+index 2cc4663..589d3a5 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+2df4f3fe5da780073e04db93ff5828f213f4aefe5a05ff1b2ab9c0297a8b89c5
++fbe16b1e7e7a89a0cbe5c8b2419b0aa08775450ded0c28b5d526dcd882d317d1
