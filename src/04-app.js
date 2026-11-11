@@ -6297,6 +6297,44 @@ function todayPctOf(code) {
   return (pr.curNav / pr.prevNav - 1) * 100;
 }
 
+/**
+ * 全组合「当日盈亏」的唯一口径来源。
+ *
+ * 资产卡、持仓行「今日」列、「总资产涨跌」页的按日网格，
+ * 三处的当日数字必须都从这里取 —— 各自算一遍必然对不上，
+ * 「主界面和按日网格收益不一致」就是这个病根。
+ *
+ * 口径与 viewAssets 完全一致：
+ *   单只当日盈亏 = (现价 - 昨净值) × 份额
+ *   现价盘中取预估/官方估值，收盘后自动换成当日真实净值
+ * 没有任何净值数据的基金记 0，但市值仍计入昨日基数，
+ * 保证 Σ 单只 = 总资产卡上的数字。
+ */
+function todayPnlAll() {
+  let pnl = 0, prevTotal = 0, live = false, hasPair = false, realizedAll = true;
+  const per = Object.create(null);
+  for (const h of S.holdings) {
+    const shares = Math.max(0, +h.shares || 0);
+    const pair = navPairOf(h.code);
+    if (pair) {
+      const p = (pair.curNav - pair.prevNav) * shares;
+      pnl += p;
+      prevTotal += pair.prevNav * shares;
+      if (pair.realized || pair.live) live = true;
+      if (!pair.realized) realizedAll = false;
+      hasPair = true;
+      per[h.code] = {
+        pnl: p, prevNav: pair.prevNav, curNav: pair.curNav, realized: pair.realized,
+      };
+    } else {
+      const c = holdCalc(h, S.full[h.code]);
+      prevTotal += c.value;
+      per[h.code] = { pnl: 0, prevNav: null, curNav: null, realized: false };
+    }
+  }
+  return { pnl, prevTotal, live, per, realizedAll: hasPair && realizedAll };
+}
+
 
 /* ---------------- 调试日志 ----------------
  *
@@ -8253,23 +8291,17 @@ function viewAssets() {
   const list = assetFiltered();
   const hasHold = S.holdings.length > 0;
 
-  /* 汇总 */
-  let total = 0, cost = 0, todayPnl = 0, prevTotal = 0, cashDivTotal = 0, divFundCount = 0;
+  /* 汇总：当日盈亏统一走 todayPnlAll()，和按日网格、持仓行同一口径 */
+  let total = 0, cost = 0, cashDivTotal = 0, divFundCount = 0;
   for (const h of S.holdings) {
     const c = holdCalc(h, S.full[h.code]);
-    const pair = navPairOf(h.code);
-    const shares = +h.shares || 0;
     total += c.value;
     cost += c.principal;
     cashDivTotal += c.cashDiv;
     if (c.divCount) divFundCount += 1;
-    if (pair) {
-      prevTotal += pair.prevNav * shares;
-      todayPnl += (pair.curNav - pair.prevNav) * shares;
-    } else {
-      prevTotal += c.value;
-    }
   }
+  const td = todayPnlAll();
+  const todayPnl = td.pnl, prevTotal = td.prevTotal;
   const profit = total - cost + cashDivTotal;
   const todayPct = prevTotal ? todayPnl / prevTotal * 100 : 0;
 
@@ -8452,6 +8484,17 @@ function assetHoldRow(h) {
       : "分红再投 " + c.divCount + " 次");
   }
 
+  /*
+   * 「今日」列先给金额、百分比放小字（养基宝同款式）。
+   *
+   * 原来这里只有一个百分比：卡片上是金额、行上是百分比，
+   * 用户没法把各行加起来和卡片对账，「对不上」的观感一半来自这里。
+   * 金额与资产卡同源（todayPnlAll 的口径：(现价-昨净值)×份额）。
+   */
+  const pair = navPairOf(h.code);
+  const shares = Math.max(0, +h.shares || 0);
+  const tpnl = pair ? (pair.curNav - pair.prevNav) * shares : null;
+
   return '<div class="fund" data-code="' + h.code + '">'
     + '<div class="c0">'
     + '<div class="nm">' + (h.name || h.code) + '</div>'
@@ -8460,8 +8503,11 @@ function assetHoldRow(h) {
     + '</div>'
     + (bits.length ? '<div class="amt dim">' + bits.join(" · ") + '</div>' : "")
     + '</div>'
-    + '<div class="c1 ' + pctCls(tp || 0) + '">'
-    + (tp == null ? "--" : pctTxt(tp).replace("%", "")) + '</div>'
+    + '<div class="c1 ' + pctCls(tpnl || 0) + '">'
+    + (tpnl == null ? "--"
+      : '<span class="amtday">' + moneyTxt(tpnl) + '</span>'
+        + (tp == null ? '' : '<small>' + pctTxt(tp) + '</small>'))
+    + '</div>'
     + '<div class="c2 ' + pctCls(c.profit) + '">' + moneyTxt(c.profit)
     + '<small>' + pctTxt(c.profitPct) + '</small></div>'
     + '</div>';
