@@ -386,16 +386,9 @@
   .colhead{display:flex;align-items:center;padding:9px var(--sp-4);
     font-size:var(--fs-xs);color:var(--dim);font-weight:500;
     background:var(--card-2);border-bottom:1px solid var(--line)}
-  /* 表头三列与 .fund 行同宽，列才对得齐 */
-  .colhead .c0{flex:1;min-width:0}
-  .colhead .c1{width:84px;text-align:right}
-  .colhead .c2{width:96px;text-align:right}
   .fund{display:flex;align-items:center;gap:var(--sp-3);
     padding:13px var(--sp-4);position:relative;cursor:pointer;
     transition:background-color var(--dur-1) var(--ease-out)}
-  /* 没有 data-code 的行（按日盈亏网格等）不可点，去掉手势暗示 */
-  .fund:not([data-code]){cursor:default}
-  .fund:not([data-code]):active{background:none}
   .fund+.fund{border-top:1px solid var(--line)}
   .fund:active{background:var(--card-2)}
   .fund .c0{flex:1;min-width:0}
@@ -404,9 +397,7 @@
   .fund .amt{font-size:var(--fs-sm);color:var(--dim);margin-top:3px;
     display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .fund .amt.dim{font-size:var(--fs-xs);color:var(--dim);opacity:.8}
-  .fund .c1{width:84px;text-align:right;font-size:var(--fs-md);font-weight:600;
-    display:flex;flex-direction:column;align-items:flex-end;line-height:1.3}
-  .fund .c1 small{font-size:var(--fs-xs);font-weight:500;opacity:.85}
+  .fund .c1{width:64px;text-align:right;font-size:var(--fs-md);font-weight:600}
   .fund .c2{width:96px;text-align:right;font-size:var(--fs-md);font-weight:600;
     display:flex;flex-direction:column;align-items:flex-end;line-height:1.3}
   .fund .c2 small{font-size:var(--fs-xs);font-weight:500;opacity:.85}
@@ -703,7 +694,7 @@ html.theme-anim, html.theme-anim * {
     opacity:.6
   }
 
-body.hideamt .big, body.hideamt .today, body.hideamt .asset .sub span, body.hideamt .asset .predrow span, body.hideamt .fund .amt, body.hideamt .fund .c2, body.hideamt .fund .est, body.hideamt .fund .amtday, body.hideamt .mval, body.hideamt .perf-num {
+body.hideamt .big, body.hideamt .today, body.hideamt .asset .sub span, body.hideamt .asset .predrow span, body.hideamt .fund .amt, body.hideamt .fund .c2, body.hideamt .fund .est, body.hideamt .mval, body.hideamt .perf-num {
     filter:blur(5px);
     user-select:none
   }
@@ -7642,44 +7633,6 @@ function todayPctOf(code) {
   return (pr.curNav / pr.prevNav - 1) * 100;
 }
 
-/**
- * 全组合「当日盈亏」的唯一口径来源。
- *
- * 资产卡、持仓行「今日」列、「总资产涨跌」页的按日网格，
- * 三处的当日数字必须都从这里取 —— 各自算一遍必然对不上，
- * 「主界面和按日网格收益不一致」就是这个病根。
- *
- * 口径与 viewAssets 完全一致：
- *   单只当日盈亏 = (现价 - 昨净值) × 份额
- *   现价盘中取预估/官方估值，收盘后自动换成当日真实净值
- * 没有任何净值数据的基金记 0，但市值仍计入昨日基数，
- * 保证 Σ 单只 = 总资产卡上的数字。
- */
-function todayPnlAll() {
-  let pnl = 0, prevTotal = 0, live = false, hasPair = false, realizedAll = true;
-  const per = Object.create(null);
-  for (const h of S.holdings) {
-    const shares = Math.max(0, +h.shares || 0);
-    const pair = navPairOf(h.code);
-    if (pair) {
-      const p = (pair.curNav - pair.prevNav) * shares;
-      pnl += p;
-      prevTotal += pair.prevNav * shares;
-      if (pair.realized || pair.live) live = true;
-      if (!pair.realized) realizedAll = false;
-      hasPair = true;
-      per[h.code] = {
-        pnl: p, prevNav: pair.prevNav, curNav: pair.curNav, realized: pair.realized,
-      };
-    } else {
-      const c = holdCalc(h, S.full[h.code]);
-      prevTotal += c.value;
-      per[h.code] = { pnl: 0, prevNav: null, curNav: null, realized: false };
-    }
-  }
-  return { pnl, prevTotal, live, per, realizedAll: hasPair && realizedAll };
-}
-
 
 /* ---------------- 调试日志 ----------------
  *
@@ -9636,17 +9589,23 @@ function viewAssets() {
   const list = assetFiltered();
   const hasHold = S.holdings.length > 0;
 
-  /* 汇总：当日盈亏统一走 todayPnlAll()，和按日网格、持仓行同一口径 */
-  let total = 0, cost = 0, cashDivTotal = 0, divFundCount = 0;
+  /* 汇总 */
+  let total = 0, cost = 0, todayPnl = 0, prevTotal = 0, cashDivTotal = 0, divFundCount = 0;
   for (const h of S.holdings) {
     const c = holdCalc(h, S.full[h.code]);
+    const pair = navPairOf(h.code);
+    const shares = +h.shares || 0;
     total += c.value;
     cost += c.principal;
     cashDivTotal += c.cashDiv;
     if (c.divCount) divFundCount += 1;
+    if (pair) {
+      prevTotal += pair.prevNav * shares;
+      todayPnl += (pair.curNav - pair.prevNav) * shares;
+    } else {
+      prevTotal += c.value;
+    }
   }
-  const td = todayPnlAll();
-  const todayPnl = td.pnl, prevTotal = td.prevTotal;
   const profit = total - cost + cashDivTotal;
   const todayPct = prevTotal ? todayPnl / prevTotal * 100 : 0;
 
@@ -9829,17 +9788,6 @@ function assetHoldRow(h) {
       : "分红再投 " + c.divCount + " 次");
   }
 
-  /*
-   * 「今日」列先给金额、百分比放小字（养基宝同款式）。
-   *
-   * 原来这里只有一个百分比：卡片上是金额、行上是百分比，
-   * 用户没法把各行加起来和卡片对账，「对不上」的观感一半来自这里。
-   * 金额与资产卡同源（todayPnlAll 的口径：(现价-昨净值)×份额）。
-   */
-  const pair = navPairOf(h.code);
-  const shares = Math.max(0, +h.shares || 0);
-  const tpnl = pair ? (pair.curNav - pair.prevNav) * shares : null;
-
   return '<div class="fund" data-code="' + h.code + '">'
     + '<div class="c0">'
     + '<div class="nm">' + (h.name || h.code) + '</div>'
@@ -9848,11 +9796,8 @@ function assetHoldRow(h) {
     + '</div>'
     + (bits.length ? '<div class="amt dim">' + bits.join(" · ") + '</div>' : "")
     + '</div>'
-    + '<div class="c1 ' + pctCls(tpnl || 0) + '">'
-    + (tpnl == null ? "--"
-      : '<span class="amtday">' + moneyTxt(tpnl) + '</span>'
-        + (tp == null ? '' : '<small>' + pctTxt(tp) + '</small>'))
-    + '</div>'
+    + '<div class="c1 ' + pctCls(tp || 0) + '">'
+    + (tp == null ? "--" : pctTxt(tp).replace("%", "")) + '</div>'
     + '<div class="c2 ' + pctCls(c.profit) + '">' + moneyTxt(c.profit)
     + '<small>' + pctTxt(c.profitPct) + '</small></div>'
     + '</div>';
@@ -10257,19 +10202,7 @@ async function buildPerfCurve(days) {
         if (ds) flow += px * ds;
       }
     }
-    /*
-     * 顺带记下当日每只基金的「成交价(填充后净值) / 份额」。
-     * 按日网格要把它分解到单只：当日盈亏 = (今净值 - 昨净值) × 昨份额，
-     * 用昨份额是因为当天申赎的钱当天不产生盈亏（与 flow 的口径互斥）。
-     * 全部单只相加严格等于 总市值差 - 净流入，网格才能和总数字对账。
-     */
-    const fx = Object.create(null);
-    for (const f of funds) {
-      // 不用 ?? ：老 WebView 不认，全文件保持 ES2018 语法
-      const px0 = lastNav[f.code];
-      fx[f.code] = { px: px0 == null ? null : px0, sh: shares[f.code] || 0 };
-    }
-    rows.push({ date: d, mv, flow, fx });
+    rows.push({ date: d, mv, flow });
     prevShares = shares;
   }
 
@@ -10296,24 +10229,6 @@ async function buildPerfCurve(days) {
     acct.push(prev * (1 + r));
   }
 
-  /*
-   * 单基区间盈亏分解：当日盈亏_f = (今净值 - 昨净值) × 昨份额。
-   *
-   * 数学上 Σ_f 当日盈亏_f = 当日市值差 - 当日净流入（把 flow 展开即恒等），
-   * 所以界面上「各基金区间盈亏相加」必然等于头部「区间累计盈亏」，
-   * 不会再出现主界面和按日网格各说各话的情况。
-   */
-  const fundPnl = Object.create(null);
-  for (let i = 1; i < seq.length; i++) {
-    const cur = seq[i].fx, prv = seq[i - 1].fx;
-    for (const f of funds) {
-      const a = cur[f.code], b = prv[f.code];
-      if (!a || !b || a.px == null || b.px == null) continue;
-      const contrib = (a.px - b.px) * b.sh;
-      if (contrib) fundPnl[f.code] = (fundPnl[f.code] || 0) + contrib;
-    }
-  }
-
   const seqDates = seq.map(r => r.date);
 
   // 基准映射：对齐到实际使用的日期区间
@@ -10338,11 +10253,6 @@ async function buildPerfCurve(days) {
     startDate: seqDates[0],
     // 前几天因为「还没持仓」被砍掉了，界面据此说明区间为何比选定的短
     skipped: s0,
-    // 逐日市值/净流入：按日网格在渲染时据此算「当日盈亏」，
-    // 并可在渲染时追加一条「今日（盘中预估）」行，与主界面同源刷新
-    days: seq.map(r => ({ date: r.date, mv: r.mv, flow: r.flow })),
-    // 单基区间盈亏分解：Σ = 区间累计盈亏（见上方恒等式）
-    fundPnl: fundPnl,
   };
 }
 
@@ -10414,84 +10324,63 @@ function perfChart(curve) {
 /**
  * 历史总资产涨跌页。
  *
- * 主数字 = 区间累计盈亏（按日盈亏之和），和下面的按日网格逐项对得上；
- * 网格的「今日」行与资产页「今日盈亏」同源（todayPnlAll），
- * 盘中跟随 30 秒预估刷新 —— 对齐养基宝的当日收益更新体验。
+ * 原来这里只给一个账户收益率百分比。但点进来的动机其实是
+ * 「我这段时间到底赚了亏了多少钱」，百分比答不了这个问题。
+ * 所以主数字换成金额，百分比退到副行。
  */
 function viewPerf() {
   const c = S.perfCurve;
   const days = S.perfDays || 60;
 
-  /* 当前总资产：与资产页同一口径（份额 × 最新净值，含盘中预估） */
+  /* 当前总资产：与资产页同一口径（份额 × 最新净值） */
   let totalNow = 0;
   for (const h of S.holdings) totalNow += holdCalc(h, S.full[h.code]).value;
 
   /*
-   * 曲线本身只含已公布净值；「今日」这一行在渲染时现补：
-   *   今日市值 = 最近公布日市值 + 今日盈亏（todayPnlAll，与主界面同源）
-   * 这样网格「今日」行永远等于资产卡的「今日盈亏」，
-   * 且每次 render 都重算，盘中自然跟着预估走。
+   * 把净值化曲线还原成真金白银。
+   *
+   * buildPerfCurve 给的是以 100 为基准的序列，用它反推期初市值即可，
+   * 不必额外存一份历史快照：
+   *     期初 = 当前总资产 × 期初指数 / 期末指数
    */
-  const td = todayPnlAll();
-  const allDays = c && c.days ? c.days.slice() : [];
-  let acctLast = c && c.acct && c.acct.length ? c.acct[c.acct.length - 1] : null;
-  let todayRow = null;
-  if (allDays.length && td.live && allDays[allDays.length - 1].date < todayStr()) {
-    const lastMv = allDays[allDays.length - 1].mv;
-    todayRow = { date: todayStr(), mv: lastMv + td.pnl, flow: 0, est: !td.realizedAll };
-    allDays.push(todayRow);
-    if (acctLast != null && lastMv > 0) acctLast *= (1 + td.pnl / lastMv);
+  let startValue = totalNow, changeMoney = 0, hasCurve = false;
+  if (c && c.acct && c.acct.length > 1) {
+    const last = c.acct[c.acct.length - 1];
+    const first = c.acct[0];
+    if (last) {
+      startValue = totalNow * first / last;
+      changeMoney = totalNow - startValue;
+      hasCurve = true;
+    }
   }
-
-  /* 当日盈亏 = 今日市值 - 昨日市值 - 今日净流入（与 TWR 曲线同一分子） */
-  const dayRows = [];
-  let cumPnl = 0;
-  for (let i = allDays.length - 1; i >= 1; i--) {
-    const base = allDays[i - 1].mv;
-    const pnl = allDays[i].mv - base - allDays[i].flow;
-    cumPnl += pnl;
-    dayRows.push({
-      date: allDays[i].date,
-      pnl: pnl,
-      pct: base > 0 ? pnl / base * 100 : null,
-      est: !!allDays[i].est,
-    });
-  }
-  const hasCurve = !!allDays.length;
-  const firstMv = hasCurve ? allDays[0].mv : totalNow;
-  const lastMvAll = hasCurve ? allDays[allDays.length - 1].mv : totalNow;
-  const acctPct = acctLast != null ? acctLast - 100 : null;
-
   const changeColor = !hasCurve ? "var(--dim)"
-    : (cumPnl > 0 ? "var(--up)" : (cumPnl < 0 ? "var(--down)" : "var(--fg)"));
+    : (changeMoney > 0 ? "var(--up)" : (changeMoney < 0 ? "var(--down)" : "var(--fg)"));
 
   let html = "<div class=\"pcard\" style=\"margin:12px 12px 0;padding:16px\">";
   html += "<div style=\"display:flex;align-items:baseline;gap:10px\">";
   html += "<div class=\"big perf-num\" style=\"font-size:var(--fs-3xl);font-weight:700;color:"
-    + changeColor + "\">" + (hasCurve ? moneyFull(cumPnl) : "--") + "</div>";
-  html += "<div style=\"font-size:var(--fs-sm);color:var(--dim)\">近 " + days + " 个交易日累计盈亏</div>";
+    + changeColor + "\">" + (hasCurve ? moneyFull(changeMoney) : "--") + "</div>";
+  html += "<div style=\"font-size:var(--fs-sm);color:var(--dim)\">近 " + days + " 个交易日</div>";
   html += "</div>";
 
-  /* 期初 → 期末市值 + 区间收益率（时间加权，含今日盘中） */
+  /* 期初 → 期末，把「钱」这条线也交代清楚 */
   if (hasCurve) {
     html += "<div style=\"margin-top:10px;display:flex;align-items:center;gap:8px;" +
       "font-size:var(--fs-sm);color:var(--fg2)\">";
-    html += "<span>" + moneyFull0(firstMv) + "</span>";
+    html += "<span>" + moneyFull0(startValue) + "</span>";
     html += "<span style=\"color:var(--dim)\">→</span>";
-    html += "<span class=\"" + pctCls(cumPnl) + "\" style=\"font-weight:600\">" +
-      moneyFull0(lastMvAll) + "</span>";
-    html += "<span class=\"" + pctCls(acctPct) + "\" style=\"margin-left:auto\">" +
-      pctTxt(acctPct) + "</span>";
+    html += "<span class=\"" + pctCls(changeMoney) + "\" style=\"font-weight:600\">" +
+      moneyFull0(totalNow) + "</span>";
+    html += "<span class=\"" + pctCls(c.acctPct) + "\" style=\"margin-left:auto\">" +
+      pctTxt(c.acctPct) + "</span>";
     html += "</div>";
   }
 
   html += "<div style=\"margin-top:8px;font-size:var(--fs-sm);color:var(--fg2)\">同期沪深300 ";
   if (c && c.benchPct != null) {
     html += "<span class=\"" + pctCls(c.benchPct) + "\">" + pctTxt(c.benchPct) + "</span>";
-    if (acctPct != null) {
-      html += "<span style=\"color:var(--dim)\"> · 超额 <b class=\"" +
-        pctCls(acctPct - c.benchPct) + "\">" + pctTxt(acctPct - c.benchPct) + "</b></span>";
-    }
+    html += "<span style=\"color:var(--dim)\"> · 超额 <b class=\"" +
+      pctCls(c.acctPct - c.benchPct) + "\">" + pctTxt(c.acctPct - c.benchPct) + "</b></span>";
   } else {
     html += "--";
   }
@@ -10507,61 +10396,32 @@ function viewPerf() {
 
   html += "<div style=\"background:var(--card);margin:10px 12px;border-radius:14px;" +
     "padding:12px 8px 4px;overflow:hidden\">";
-  /* 曲线也补上今日盘中这一点，终点与网格、与主界面一致 */
-  let chartCurve = c;
-  if (c && todayRow && acctLast != null) {
-    chartCurve = Object.assign({}, c, {
-      dates: c.dates.concat([todayRow.date]),
-      acct: c.acct.concat([acctLast]),
-      bench: c.bench.concat([null]),
-    });
-  }
   html += S.perfBusy
     ? "<div class=\"empty\" style=\"height:120px\">正在回溯…</div>"
-    : perfChart(chartCurve);
+    : perfChart(c);
   html += "<div style=\"display:flex;gap:14px;padding:8px 8px 10px;font-size:var(--fs-xs);color:var(--dim)\">" +
     "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--accent);border-radius:2px;vertical-align:middle\"></i> 我的账户</span>" +
     "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
     "</div></div>";
 
-  /* 按日盈亏网格（新→旧）：今日行即盘中预估，随刷新跳动 */
-  if (dayRows.length) {
-    html += "<div class=\"colhead\"><div class=\"c0\">日期</div>" +
-      "<div class=\"c1\">当日涨跌</div><div class=\"c2\">当日盈亏</div></div>";
-    for (const r of dayRows) {
-      html += "<div class=\"fund\">" +
-        "<div class=\"c0\"><div class=\"nm\" style=\"font-size:var(--fs-md);font-weight:500\">" +
-        r.date.slice(5) +
-        (r.est ? " <span class=\"pill pred\">盘中预估</span>" : "") +
-        "</div></div>" +
-        "<div class=\"c1 " + pctCls(r.pnl || 0) + "\">" +
-        (r.pct == null ? "--" : pctTxt(r.pct).replace("%", "")) + "</div>" +
-        "<div class=\"c2 " + pctCls(r.pnl) + "\">" + moneyTxt(r.pnl) + "</div>" +
-        "</div>";
-    }
-  }
-
-  /*
-   * 单基网格：今日盈亏（与主界面列表同源）+ 区间盈亏（buildPerfCurve 的分解）。
-   * Σ 区间盈亏 = 头部「累计盈亏」，Σ 今日列 = 资产卡「今日盈亏」，
-   * 三处数字可以逐分对账。
-   */
+  // 逐只贡献
   const hs = S.holdings.filter(h => S.full[h.code] && S.full[h.code].trend);
   if (hs.length) {
     html += "<div class=\"colhead\"><div class=\"c0\">基金</div>" +
-      "<div class=\"c1\">今日</div><div class=\"c2\">区间盈亏</div></div>";
+      "<div class=\"c1\">占比</div><div class=\"c2\">" + days + "日</div></div>";
+    let totVal = 0;
+    for (const h of hs) totVal += (S.nav[h.code] ? S.nav[h.code].nav : 0) * h.shares;
     for (const h of hs) {
-      const val = holdCalc(h, S.full[h.code]).value;
-      const w = totalNow ? val / totalNow * 100 : 0;
-      const t = td.per[h.code];
-      const tpnl = t && t.curNav != null ? t.pnl : null;
-      const period = (c && c.fundPnl && c.fundPnl[h.code] ? c.fundPnl[h.code] : 0)
-        + (todayRow && tpnl != null ? tpnl : 0);
-      html += "<div class=\"fund\" data-code=\"" + h.code + "\">" +
-        "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div>" +
-        "<div class=\"amt\">占比 " + fmt(w, 1) + "%</div></div>" +
-        "<div class=\"c1 " + pctCls(tpnl || 0) + "\"><span class=\"amtday\">" + moneyTxt(tpnl) + "</span></div>" +
-        "<div class=\"c2 " + pctCls(period) + "\">" + moneyTxt(period) + "</div>" +
+      const tr = S.full[h.code].trend;
+      const cur = tr[tr.length - 1].nav;
+      const from = tr[Math.max(0, tr.length - 1 - days)].nav;
+      const pct = from ? (cur / from - 1) * 100 : 0;
+      const val = (S.nav[h.code] ? S.nav[h.code].nav : cur) * h.shares;
+      const w = totVal ? val / totVal * 100 : 0;
+      html += "<div class=\"fund\">" +
+        "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
+        "<div class=\"c1\">" + fmt(w, 1) + "%</div>" +
+        "<div class=\"c2 " + pctCls(pct) + "\">" + pctTxt(pct).replace("%", "") + "</div>" +
         "</div>";
     }
   } else {
@@ -10570,8 +10430,7 @@ function viewPerf() {
 
   html += "<div style=\"padding:14px 16px 24px;text-align:center;" +
     "font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
-    "当日盈亏与资产页「今日」同口径：(现价 − 昨净值) × 份额，申赎本身不计盈亏<br>" +
-    "区间累计盈亏 = 上方各日之和；按当前持仓回溯，与真实交易记录可能有出入</div>";
+    "按当前持仓份额回溯，非真实成交记录<br>中途加减仓会与实际收益有差异</div>";
   return html;
 }
 
@@ -13312,12 +13171,8 @@ function openEditForm(h) {
   setInterval(() => {
     if (document.hidden) return;
     if (!isTradingNow()) return;
-    /*
-     * 资产页：刷「预估」列与资产卡今日盈亏；
-     * 总资产涨跌页：按日网格的「今日（盘中预估）」行同源重算，
-     * 与养基宝一样能看到当日收益盘中跳动。其他页面刷了也没人看。
-     */
-    if (S.tab !== 'hold' && S.tab !== 'perf') return;
+    // 只有资产页才需要盘中预估，其他页面刷了也没人看
+    if (S.tab !== 'hold') return;
     refreshPredict();
   }, 30000);
 

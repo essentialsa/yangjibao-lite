@@ -1,16 +1,23 @@
-# 每次推送到 main（或手动触发）后，自动打出 debug APK。
+# 每次推送到 main / trae/**（或手动触发）后，自动打出 debug APK。
 #
 # 为什么是 debug 包而不是 release 包：release 签名需要作者的
 # keystore，fork 里没有；debug 包由 Gradle 自动生成调试签名，
 # 个人自用安装没有问题。注意 debug 包签名与作者发布的 release
 # 包不同，无法直接覆盖安装 —— 先在旧 App 里「导出数据」备份，
 # 卸载旧版再装新版，然后用「批量导入」把导出的 JSON 粘贴回来。
+#
+# 产物有两份：actions/upload-artifact 传 artifact（需登录 GitHub
+# 才能下载）；另外发布到固定 Release latest-debug，release 附件
+# 匿名即可下载，方便不登录直接取包。
 name: Build APK
 
 on:
   push:
-    branches: [main]
+    branches: [main, "trae/**"]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
@@ -56,3 +63,20 @@ jobs:
           name: yjblite-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+
+      # 同时发布到固定 Release（latest-debug）：release 附件匿名可下，
+      # 已存在就用 --clobber 覆盖附件，下载地址始终不变：
+      # .../releases/latest/download/yjblite-debug.apk
+      - name: Publish APK to release (latest-debug)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cp app/build/outputs/apk/debug/app-debug.apk yjblite-debug.apk
+          if gh release view latest-debug >/dev/null 2>&1; then
+            gh release upload latest-debug yjblite-debug.apk --clobber
+          else
+            gh release create latest-debug yjblite-debug.apk \
+              --title "最新 Debug APK" \
+              --notes "由 GitHub Actions 自动构建，每次推送更新。" \
+              --target "${{ github.sha }}"
+          fi

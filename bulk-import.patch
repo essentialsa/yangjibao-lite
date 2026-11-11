@@ -104,7 +104,7 @@ index 58d696c..51ee316 100644
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
 diff --git a/app/src/main/assets/index.html b/app/src/main/assets/index.html
-index c72eeee..8c2d90e 100644
+index c72eeee..63ac9f2 100644
 --- a/app/src/main/assets/index.html
 +++ b/app/src/main/assets/index.html
 @@ -397,7 +397,9 @@
@@ -547,7 +547,7 @@ index c72eeee..8c2d90e 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -10202,15 +10364,176 @@ async function buildPerfCurve(days) {
+@@ -10202,15 +10364,203 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -697,6 +697,33 @@ index c72eeee..8c2d90e 100644
 +  return ld;
 +}
 +
++/*
++ * 盘中「今日」预估口径（v1.1.9）。
++ *
++ * 与主屏幕资产卡盘中回退分支（viewAssets 里 shared 为 null 时的循环）
++ * 逐字同口径：(现价 − 昨净值) × 份额，现价取预估；没有任何净值数据
++ * 的基金记 0、市值计入昨日基数。返回的 pnl 与主屏幕「今日」恒等。
++ *
++ * 用途：今天的净值还没出时，给收益分析网格补一条「今日（盘中预估）」，
++ * 让网格和主屏幕永远对得上，并能跟随盘中刷新。收盘出净值后
++ * todayShared() 接管，自动换回已实现口径。
++ */
++function todayEstPnl() {
++  let pnl = 0, prevTotal = 0, live = false;
++  for (const h of S.holdings) {
++    const shares = +h.shares || 0;
++    const pair = navPairOf(h.code);
++    if (pair) {
++      pnl += (pair.curNav - pair.prevNav) * shares;
++      prevTotal += pair.prevNav * shares;
++      if (pair.realized || pair.live) live = true;
++    } else {
++      prevTotal += holdCalc(h, S.full[h.code]).value;
++    }
++  }
++  return { pnl, prevTotal, live, pct: prevTotal ? pnl / prevTotal * 100 : 0 };
++}
++
 +/* ---- 历史收益率（账户 vs 大盘） ---- */
 +
 +/**
@@ -726,7 +753,7 @@ index c72eeee..8c2d90e 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -10251,11 +10574,112 @@ async function buildPerfCurve(days) {
+@@ -10251,11 +10601,137 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -774,6 +801,8 @@ index c72eeee..8c2d90e 100644
 +      pnl: seq[i].mv - seq[i - 1].mv - seq[i].flow
 +        + (seq[i].div || 0) + (seq[i].inc || 0),
 +      mv: seq[i].mv,
++      // 盘中补的「今日（预估）」行会带 est 标记，日历格子据此加「估」角标
++      est: !!seq[i].est,
 +    });
 +  }
 +  if (!daily.length) return null;
@@ -823,13 +852,36 @@ index c72eeee..8c2d90e 100644
 +/** 同步算收益分析（S.full 已在内存里，不用等网络） */
 +function computePnlStats() {
 +  try {
-+    const seq = buildDailyRows(PNL_DAYS);
++    let seq = buildDailyRows(PNL_DAYS);
++
++    /*
++     * v1.1.9：盘中给序列补一条「今日（盘中预估）」行。
++     *
++     * 今天的净值没出时，序列最后一天停在昨天，主屏幕却在显示盘中预估，
++     * 于是「主界面和按日网格对不上」、网格里也看不到当日收益更新。
++     * 补的这条与主屏幕同口径（todayEstPnl）：
++     *     今日市值 = 昨日市值 + 主屏幕今日盈亏
++     * 从此网格「今日」与资产卡「今日」恒等，并跟随 30 秒盘中刷新；
++     * 今日净值公布后 todayShared() 接管，自动换回已实现口径。
++     */
++    if (seq && seq.length && !todayShared()) {
++      const est = todayEstPnl();
++      const t = todayStr();
++      if (est.live && seq[seq.length - 1].date < t) {
++        const lastMv = seq[seq.length - 1].mv;
++        seq = seq.concat([{ date: t, mv: lastMv + est.pnl, flow: 0, div: 0, inc: 0, est: true }]);
++      }
++    }
++
 +    const st = aggregatePnl(seq);
 +    if (st) {
 +      // v1.1.6：今日汇总和主屏幕共用最新净值日口径（不是最后一行的日期口径）
 +      const shared = todayShared();
 +      if (shared) {
 +        st.today = { pnl: shared.total, pct: shared.pct, date: shared.date, latestNav: true };
++      } else if (st.daily.length && st.daily[st.daily.length - 1].est) {
++        // 盘中：今日汇总就是那条预估行，标出来让界面显示「盘中预估」
++        st.today = { pnl: st.today.pnl, pct: st.today.pct, date: st.today.date, est: true };
 +      }
 +    }
 +    return st;
@@ -841,7 +893,7 @@ index c72eeee..8c2d90e 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -10321,6 +10745,209 @@ function perfChart(curve) {
+@@ -10321,6 +10797,212 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -936,9 +988,10 @@ index c72eeee..8c2d90e 100644
 + *
 + * 返回按月升序的数组，每项：
 + *   { key: 'YYYY-MM', label: '2026年11月', total: 当月盈亏合计,
-+ *     cells: [null(月初对齐的空格) | {day, pnl}] }
++ *     cells: [null(月初对齐的空格) | {day, pnl, est}] }
 + * 其中 pnl 为 null 表示那天没有交易数据（周末/节假日），格子留空；
-+ * pnl 为数字（可正可负可为 0）表示一个交易日的盈亏。
++ * pnl 为数字（可正可负可为 0）表示一个交易日的盈亏；
++ * est 为 true 表示这条是盘中预估（今日净值未公布时补的那条）。
 + * 星期用日期本身算（周一=0 … 周日=6），不硬编码。
 + */
 +function pnlCalendarMonths(daily) {
@@ -947,7 +1000,7 @@ index c72eeee..8c2d90e 100644
 +  for (const d of daily) {
 +    const k = d.date.slice(0, 7);
 +    if (!byMonth[k]) { byMonth[k] = Object.create(null); order.push(k); }
-+    byMonth[k][d.date] = d.pnl;
++    byMonth[k][d.date] = d;
 +  }
 +  return order.map(k => {
 +    const y = +k.slice(0, 4), m = +k.slice(5, 7);
@@ -958,9 +1011,9 @@ index c72eeee..8c2d90e 100644
 +    let total = 0;
 +    for (let day = 1; day <= daysInMonth; day++) {
 +      const ds = k + '-' + String(day).padStart(2, '0');
-+      const pnl = byMonth[k][ds];
-+      if (pnl == null) cells.push({ day, pnl: null });
-+      else { cells.push({ day, pnl }); total += pnl; }
++      const rec = byMonth[k][ds];
++      if (rec == null) cells.push({ day, pnl: null });
++      else { cells.push({ day, pnl: rec.pnl, est: !!rec.est }); total += rec.pnl; }
 +    }
 +    return { key: k, label: y + '年' + m + '月', total, cells };
 +  });
@@ -1007,7 +1060,9 @@ index c72eeee..8c2d90e 100644
 +          s += "<div style=\"min-height:40px;border-radius:8px;background:var(--card2);opacity:.45\"></div>";
 +        } else {
 +          s += "<div style=\"min-height:40px;border-radius:8px;padding:4px 1px;text-align:center;overflow:hidden;" + cellBg(c.pnl) + "\">"
-+            + "<div style=\"font-size:10px;color:var(--fg2)\">" + c.day + "</div>"
++            + "<div style=\"font-size:10px;color:var(--fg2)\">" + c.day
++            + (c.est ? "<span style=\"margin-left:2px;padding:0 3px;border-radius:4px;background:var(--chip);font-size:9px\">估</span>" : "")
++            + "</div>"
 +            + "<div class=\"" + pctCls(c.pnl) + "\" style=\"font-size:10px;font-weight:700;white-space:nowrap\">" + moneyTxt(c.pnl) + "</div></div>";
 +        }
 +      }
@@ -1051,14 +1106,19 @@ index c72eeee..8c2d90e 100644
  /**
   * 历史总资产涨跌页。
   *
-@@ -10404,19 +11031,78 @@ function viewPerf() {
+@@ -10404,19 +11086,83 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
 +  // ---- 收益分析（本 fork 新增 v1.1.3）----
 +  html += "<div class=\"pcard\" style=\"margin:10px 12px;padding:14px\">";
 +  html += "<div style=\"font-size:var(--fs-md);font-weight:700\">收益分析</div>";
-+  const ps = S.pnlStats;
++  /*
++   * 现算而不是读 S.pnlStats 缓存：盘中 refreshPredict 每 30 秒触发
++   * render()，这里每次重算，网格的「今日（盘中预估）」才会跟着预估跳动。
++   * 纯内存计算（S.full 已在），开销可忽略；算不出来再退回缓存。
++   */
++  const ps = computePnlStats() || S.pnlStats;
 +  if (S.perfBusy && !ps) {
 +    html += "<div class=\"empty\" style=\"padding:24px 0\">正在回溯…</div>";
 +  } else if (!ps) {
@@ -1066,7 +1126,7 @@ index c72eeee..8c2d90e 100644
 +  } else {
 +    // 四组汇总：今日 / 本月 / 本年 / 累计，每组都标实际起止
 +    const cells = [
-+      { t: "今日收益", v: ps.today, sub: ps.today.latestNav ? "最新净值日" : ps.today.date.slice(5) },
++      { t: "今日收益", v: ps.today, sub: ps.today.est ? "盘中预估" : (ps.today.latestNav ? "最新净值日" : ps.today.date.slice(5)) },
 +      { t: "本月收益", v: ps.month, sub: ps.month.from ? "自 " + ps.month.from.slice(5) + " 起" : ps.month.label },
 +      { t: "本年累计", v: ps.year, sub: ps.year.from ? "自 " + ps.year.from.slice(5) + " 起" : ps.year.label + "年" },
 +      { t: "累计收益", v: ps.total, sub: "自 " + ps.total.from + " 起" },
@@ -1098,9 +1158,9 @@ index c72eeee..8c2d90e 100644
 +    html += "<div style=\"margin-top:4px\">" + (view === 'grid' ? pnlGrid(ps, mode) : pnlBars(ps, mode)) + "</div>";
 +    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
 +      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
-+      "「今日」按各只基金最新净值日汇总（和主屏幕同一口径；QDII 净值滞后，" +
-+      "最新净值日可能是前几天），日历格子按净值日期排；" +
-+      "百分比为时间加权收益率，剔除了加减仓的影响（「今日」为最新净值日简单收益率）。<br>" +
++      "「今日」与主屏幕同一口径：盘中用预估（格子带「估」角标，随行情刷新），" +
++      "今日净值公布后自动换回最新净值日（QDII 净值滞后，最新净值日可能是前几天）；" +
++      "百分比为时间加权收益率，剔除了加减仓的影响（「今日」为简单收益率）。<br>" +
 +      "窗口：" + ps.windowStart + " 至 " + ps.windowEnd + "（近 " + PNL_DAYS + " 个交易日），" +
 +      "窗口外的收益不计入。</div>";
 +  }
@@ -1135,7 +1195,7 @@ index c72eeee..8c2d90e 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -10444,6 +11130,8 @@ async function loadPerf(days) {
+@@ -10444,6 +11190,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -1144,7 +1204,7 @@ index c72eeee..8c2d90e 100644
    S.perfBusy = false;
    render();
  }
-@@ -11704,6 +12392,7 @@ function viewSettings() {
+@@ -11704,6 +12452,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -1152,7 +1212,7 @@ index c72eeee..8c2d90e 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -12405,6 +13094,14 @@ function bindGlobal() {
+@@ -12405,6 +13154,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -1167,7 +1227,7 @@ index c72eeee..8c2d90e 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -12612,6 +13309,7 @@ function bindGlobal() {
+@@ -12612,6 +13369,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -1175,7 +1235,7 @@ index c72eeee..8c2d90e 100644
    });
  
    /*
-@@ -12926,6 +13624,372 @@ function askNewGroup() {
+@@ -12926,6 +13684,372 @@ function askNewGroup() {
    };
  }
  
@@ -1548,6 +1608,17 @@ index c72eeee..8c2d90e 100644
  /* ---------------- 持仓操作菜单 ---------------- */
  
  /** 长按持仓弹出的操作面板。 */
+@@ -13171,8 +14295,8 @@ function openEditForm(h) {
+   setInterval(() => {
+     if (document.hidden) return;
+     if (!isTradingNow()) return;
+-    // 只有资产页才需要盘中预估，其他页面刷了也没人看
+-    if (S.tab !== 'hold') return;
++    // 资产页要盘中预估；「收益分析」页的今日格子也跟着预估走，一起刷
++    if (S.tab !== 'hold' && S.tab !== 'perf') return;
+     refreshPredict();
+   }, 30000);
+ 
 diff --git a/app/src/main/java/com/yjb/lite/JsBridge.kt b/app/src/main/java/com/yjb/lite/JsBridge.kt
 index dbed8bc..758506c 100644
 --- a/app/src/main/java/com/yjb/lite/JsBridge.kt
@@ -1686,7 +1757,7 @@ index 2d93980..b73c041 100644
    }
  
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..d8fdefc 100644
+index 40f6d36..4755af1 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
 @@ -2338,6 +2338,9 @@ const S = {
@@ -2103,7 +2174,7 @@ index 40f6d36..d8fdefc 100644
        const sh = f.shareAt(d);
        shares[f.code] = sh;
        const px = lastNav[f.code];
-@@ -8866,15 +9026,176 @@ async function buildPerfCurve(days) {
+@@ -8866,15 +9026,203 @@ async function buildPerfCurve(days) {
          if (ds) flow += px * ds;
        }
      }
@@ -2253,6 +2324,33 @@ index 40f6d36..d8fdefc 100644
 +  return ld;
 +}
 +
++/*
++ * 盘中「今日」预估口径（v1.1.9）。
++ *
++ * 与主屏幕资产卡盘中回退分支（viewAssets 里 shared 为 null 时的循环）
++ * 逐字同口径：(现价 − 昨净值) × 份额，现价取预估；没有任何净值数据
++ * 的基金记 0、市值计入昨日基数。返回的 pnl 与主屏幕「今日」恒等。
++ *
++ * 用途：今天的净值还没出时，给收益分析网格补一条「今日（盘中预估）」，
++ * 让网格和主屏幕永远对得上，并能跟随盘中刷新。收盘出净值后
++ * todayShared() 接管，自动换回已实现口径。
++ */
++function todayEstPnl() {
++  let pnl = 0, prevTotal = 0, live = false;
++  for (const h of S.holdings) {
++    const shares = +h.shares || 0;
++    const pair = navPairOf(h.code);
++    if (pair) {
++      pnl += (pair.curNav - pair.prevNav) * shares;
++      prevTotal += pair.prevNav * shares;
++      if (pair.realized || pair.live) live = true;
++    } else {
++      prevTotal += holdCalc(h, S.full[h.code]).value;
++    }
++  }
++  return { pnl, prevTotal, live, pct: prevTotal ? pnl / prevTotal * 100 : 0 };
++}
++
 +/* ---- 历史收益率（账户 vs 大盘） ---- */
 +
 +/**
@@ -2282,7 +2380,7 @@ index 40f6d36..d8fdefc 100644
  
    /*
     * 时间加权收益率（TWR）。
-@@ -8915,11 +9236,112 @@ async function buildPerfCurve(days) {
+@@ -8915,11 +9263,137 @@ async function buildPerfCurve(days) {
      acctPct: acctLast - 100,
      benchPct: bser[bser.length - 1] ? (bser[bser.length - 1] / b0 - 1) * 100 : null,
      startDate: seqDates[0],
@@ -2330,6 +2428,8 @@ index 40f6d36..d8fdefc 100644
 +      pnl: seq[i].mv - seq[i - 1].mv - seq[i].flow
 +        + (seq[i].div || 0) + (seq[i].inc || 0),
 +      mv: seq[i].mv,
++      // 盘中补的「今日（预估）」行会带 est 标记，日历格子据此加「估」角标
++      est: !!seq[i].est,
 +    });
 +  }
 +  if (!daily.length) return null;
@@ -2379,13 +2479,36 @@ index 40f6d36..d8fdefc 100644
 +/** 同步算收益分析（S.full 已在内存里，不用等网络） */
 +function computePnlStats() {
 +  try {
-+    const seq = buildDailyRows(PNL_DAYS);
++    let seq = buildDailyRows(PNL_DAYS);
++
++    /*
++     * v1.1.9：盘中给序列补一条「今日（盘中预估）」行。
++     *
++     * 今天的净值没出时，序列最后一天停在昨天，主屏幕却在显示盘中预估，
++     * 于是「主界面和按日网格对不上」、网格里也看不到当日收益更新。
++     * 补的这条与主屏幕同口径（todayEstPnl）：
++     *     今日市值 = 昨日市值 + 主屏幕今日盈亏
++     * 从此网格「今日」与资产卡「今日」恒等，并跟随 30 秒盘中刷新；
++     * 今日净值公布后 todayShared() 接管，自动换回已实现口径。
++     */
++    if (seq && seq.length && !todayShared()) {
++      const est = todayEstPnl();
++      const t = todayStr();
++      if (est.live && seq[seq.length - 1].date < t) {
++        const lastMv = seq[seq.length - 1].mv;
++        seq = seq.concat([{ date: t, mv: lastMv + est.pnl, flow: 0, div: 0, inc: 0, est: true }]);
++      }
++    }
++
 +    const st = aggregatePnl(seq);
 +    if (st) {
 +      // v1.1.6：今日汇总和主屏幕共用最新净值日口径（不是最后一行的日期口径）
 +      const shared = todayShared();
 +      if (shared) {
 +        st.today = { pnl: shared.total, pct: shared.pct, date: shared.date, latestNav: true };
++      } else if (st.daily.length && st.daily[st.daily.length - 1].est) {
++        // 盘中：今日汇总就是那条预估行，标出来让界面显示「盘中预估」
++        st.today = { pnl: st.today.pnl, pct: st.today.pct, date: st.today.date, est: true };
 +      }
 +    }
 +    return st;
@@ -2397,7 +2520,7 @@ index 40f6d36..d8fdefc 100644
  /**
   * 没有买入日、也没有流水时，从成本价反推一个大概的买入日。
   *
-@@ -8985,6 +9407,209 @@ function perfChart(curve) {
+@@ -8985,6 +9459,212 @@ function perfChart(curve) {
      "</svg>";
  }
  
@@ -2492,9 +2615,10 @@ index 40f6d36..d8fdefc 100644
 + *
 + * 返回按月升序的数组，每项：
 + *   { key: 'YYYY-MM', label: '2026年11月', total: 当月盈亏合计,
-+ *     cells: [null(月初对齐的空格) | {day, pnl}] }
++ *     cells: [null(月初对齐的空格) | {day, pnl, est}] }
 + * 其中 pnl 为 null 表示那天没有交易数据（周末/节假日），格子留空；
-+ * pnl 为数字（可正可负可为 0）表示一个交易日的盈亏。
++ * pnl 为数字（可正可负可为 0）表示一个交易日的盈亏；
++ * est 为 true 表示这条是盘中预估（今日净值未公布时补的那条）。
 + * 星期用日期本身算（周一=0 … 周日=6），不硬编码。
 + */
 +function pnlCalendarMonths(daily) {
@@ -2503,7 +2627,7 @@ index 40f6d36..d8fdefc 100644
 +  for (const d of daily) {
 +    const k = d.date.slice(0, 7);
 +    if (!byMonth[k]) { byMonth[k] = Object.create(null); order.push(k); }
-+    byMonth[k][d.date] = d.pnl;
++    byMonth[k][d.date] = d;
 +  }
 +  return order.map(k => {
 +    const y = +k.slice(0, 4), m = +k.slice(5, 7);
@@ -2514,9 +2638,9 @@ index 40f6d36..d8fdefc 100644
 +    let total = 0;
 +    for (let day = 1; day <= daysInMonth; day++) {
 +      const ds = k + '-' + String(day).padStart(2, '0');
-+      const pnl = byMonth[k][ds];
-+      if (pnl == null) cells.push({ day, pnl: null });
-+      else { cells.push({ day, pnl }); total += pnl; }
++      const rec = byMonth[k][ds];
++      if (rec == null) cells.push({ day, pnl: null });
++      else { cells.push({ day, pnl: rec.pnl, est: !!rec.est }); total += rec.pnl; }
 +    }
 +    return { key: k, label: y + '年' + m + '月', total, cells };
 +  });
@@ -2563,7 +2687,9 @@ index 40f6d36..d8fdefc 100644
 +          s += "<div style=\"min-height:40px;border-radius:8px;background:var(--card2);opacity:.45\"></div>";
 +        } else {
 +          s += "<div style=\"min-height:40px;border-radius:8px;padding:4px 1px;text-align:center;overflow:hidden;" + cellBg(c.pnl) + "\">"
-+            + "<div style=\"font-size:10px;color:var(--fg2)\">" + c.day + "</div>"
++            + "<div style=\"font-size:10px;color:var(--fg2)\">" + c.day
++            + (c.est ? "<span style=\"margin-left:2px;padding:0 3px;border-radius:4px;background:var(--chip);font-size:9px\">估</span>" : "")
++            + "</div>"
 +            + "<div class=\"" + pctCls(c.pnl) + "\" style=\"font-size:10px;font-weight:700;white-space:nowrap\">" + moneyTxt(c.pnl) + "</div></div>";
 +        }
 +      }
@@ -2607,14 +2733,19 @@ index 40f6d36..d8fdefc 100644
  /**
   * 历史总资产涨跌页。
   *
-@@ -9068,19 +9693,78 @@ function viewPerf() {
+@@ -9068,19 +9748,83 @@ function viewPerf() {
      "<span><i style=\"display:inline-block;width:9px;height:2.5px;background:var(--fg2);border-radius:2px;vertical-align:middle\"></i> 沪深300</span>" +
      "</div></div>";
  
 +  // ---- 收益分析（本 fork 新增 v1.1.3）----
 +  html += "<div class=\"pcard\" style=\"margin:10px 12px;padding:14px\">";
 +  html += "<div style=\"font-size:var(--fs-md);font-weight:700\">收益分析</div>";
-+  const ps = S.pnlStats;
++  /*
++   * 现算而不是读 S.pnlStats 缓存：盘中 refreshPredict 每 30 秒触发
++   * render()，这里每次重算，网格的「今日（盘中预估）」才会跟着预估跳动。
++   * 纯内存计算（S.full 已在），开销可忽略；算不出来再退回缓存。
++   */
++  const ps = computePnlStats() || S.pnlStats;
 +  if (S.perfBusy && !ps) {
 +    html += "<div class=\"empty\" style=\"padding:24px 0\">正在回溯…</div>";
 +  } else if (!ps) {
@@ -2622,7 +2753,7 @@ index 40f6d36..d8fdefc 100644
 +  } else {
 +    // 四组汇总：今日 / 本月 / 本年 / 累计，每组都标实际起止
 +    const cells = [
-+      { t: "今日收益", v: ps.today, sub: ps.today.latestNav ? "最新净值日" : ps.today.date.slice(5) },
++      { t: "今日收益", v: ps.today, sub: ps.today.est ? "盘中预估" : (ps.today.latestNav ? "最新净值日" : ps.today.date.slice(5)) },
 +      { t: "本月收益", v: ps.month, sub: ps.month.from ? "自 " + ps.month.from.slice(5) + " 起" : ps.month.label },
 +      { t: "本年累计", v: ps.year, sub: ps.year.from ? "自 " + ps.year.from.slice(5) + " 起" : ps.year.label + "年" },
 +      { t: "累计收益", v: ps.total, sub: "自 " + ps.total.from + " 起" },
@@ -2654,9 +2785,9 @@ index 40f6d36..d8fdefc 100644
 +    html += "<div style=\"margin-top:4px\">" + (view === 'grid' ? pnlGrid(ps, mode) : pnlBars(ps, mode)) + "</div>";
 +    html += "<div style=\"margin-top:6px;font-size:var(--fs-xs);color:var(--dim);line-height:1.6\">" +
 +      "口径：日收益 = 当日市值变化 − 当日净流入 + 分红 + 货币基金收益；" +
-+      "「今日」按各只基金最新净值日汇总（和主屏幕同一口径；QDII 净值滞后，" +
-+      "最新净值日可能是前几天），日历格子按净值日期排；" +
-+      "百分比为时间加权收益率，剔除了加减仓的影响（「今日」为最新净值日简单收益率）。<br>" +
++      "「今日」与主屏幕同一口径：盘中用预估（格子带「估」角标，随行情刷新），" +
++      "今日净值公布后自动换回最新净值日（QDII 净值滞后，最新净值日可能是前几天）；" +
++      "百分比为时间加权收益率，剔除了加减仓的影响（「今日」为简单收益率）。<br>" +
 +      "窗口：" + ps.windowStart + " 至 " + ps.windowEnd + "（近 " + PNL_DAYS + " 个交易日），" +
 +      "窗口外的收益不计入。</div>";
 +  }
@@ -2691,7 +2822,7 @@ index 40f6d36..d8fdefc 100644
        const w = totVal ? val / totVal * 100 : 0;
        html += "<div class=\"fund\">" +
          "<div class=\"c0\"><div class=\"nm\">" + (h.name || h.code) + "</div></div>" +
-@@ -9108,6 +9792,8 @@ async function loadPerf(days) {
+@@ -9108,6 +9852,8 @@ async function loadPerf(days) {
    } catch (e) {
      S.perfCurve = null;
    }
@@ -2700,7 +2831,7 @@ index 40f6d36..d8fdefc 100644
    S.perfBusy = false;
    render();
  }
-@@ -10368,6 +11054,7 @@ function viewSettings() {
+@@ -10368,6 +11114,7 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
@@ -2708,7 +2839,7 @@ index 40f6d36..d8fdefc 100644
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -11069,6 +11756,14 @@ function bindGlobal() {
+@@ -11069,6 +11816,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -2723,7 +2854,7 @@ index 40f6d36..d8fdefc 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -11276,6 +11971,7 @@ function bindGlobal() {
+@@ -11276,6 +12031,7 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
@@ -2731,7 +2862,7 @@ index 40f6d36..d8fdefc 100644
    });
  
    /*
-@@ -11590,6 +12286,372 @@ function askNewGroup() {
+@@ -11590,6 +12346,372 @@ function askNewGroup() {
    };
  }
  
@@ -3104,11 +3235,23 @@ index 40f6d36..d8fdefc 100644
  /* ---------------- 持仓操作菜单 ---------------- */
  
  /** 长按持仓弹出的操作面板。 */
+@@ -11835,8 +12957,8 @@ function openEditForm(h) {
+   setInterval(() => {
+     if (document.hidden) return;
+     if (!isTradingNow()) return;
+-    // 只有资产页才需要盘中预估，其他页面刷了也没人看
+-    if (S.tab !== 'hold') return;
++    // 资产页要盘中预估；「收益分析」页的今日格子也跟着预估走，一起刷
++    if (S.tab !== 'hold' && S.tab !== 'perf') return;
+     refreshPredict();
+   }, 30000);
+ 
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..63e098f 100644
+index 2cc4663..76233ee 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+1a0b253ec8f85d92fb6cf78b5493e33a91fab2590bc020d51ed471cc1c5a37ed
++ce996c60445fc05bcc79f377f28268445e7e4c844d0391909bc798e52a6ae34f
+\ No newline at end of file

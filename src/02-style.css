@@ -365,16 +365,9 @@
   .colhead{display:flex;align-items:center;padding:9px var(--sp-4);
     font-size:var(--fs-xs);color:var(--dim);font-weight:500;
     background:var(--card-2);border-bottom:1px solid var(--line)}
-  /* 表头三列与 .fund 行同宽，列才对得齐 */
-  .colhead .c0{flex:1;min-width:0}
-  .colhead .c1{width:84px;text-align:right}
-  .colhead .c2{width:96px;text-align:right}
   .fund{display:flex;align-items:center;gap:var(--sp-3);
     padding:13px var(--sp-4);position:relative;cursor:pointer;
     transition:background-color var(--dur-1) var(--ease-out)}
-  /* 没有 data-code 的行（按日盈亏网格等）不可点，去掉手势暗示 */
-  .fund:not([data-code]){cursor:default}
-  .fund:not([data-code]):active{background:none}
   .fund+.fund{border-top:1px solid var(--line)}
   .fund:active{background:var(--card-2)}
   .fund .c0{flex:1;min-width:0}
@@ -383,9 +376,7 @@
   .fund .amt{font-size:var(--fs-sm);color:var(--dim);margin-top:3px;
     display:flex;align-items:center;gap:6px;flex-wrap:wrap}
   .fund .amt.dim{font-size:var(--fs-xs);color:var(--dim);opacity:.8}
-  .fund .c1{width:84px;text-align:right;font-size:var(--fs-md);font-weight:600;
-    display:flex;flex-direction:column;align-items:flex-end;line-height:1.3}
-  .fund .c1 small{font-size:var(--fs-xs);font-weight:500;opacity:.85}
+  .fund .c1{width:64px;text-align:right;font-size:var(--fs-md);font-weight:600}
   .fund .c2{width:96px;text-align:right;font-size:var(--fs-md);font-weight:600;
     display:flex;flex-direction:column;align-items:flex-end;line-height:1.3}
   .fund .c2 small{font-size:var(--fs-xs);font-weight:500;opacity:.85}
@@ -682,7 +673,7 @@ html.theme-anim, html.theme-anim * {
     opacity:.6
   }
 
-body.hideamt .big, body.hideamt .today, body.hideamt .asset .sub span, body.hideamt .asset .predrow span, body.hideamt .fund .amt, body.hideamt .fund .c2, body.hideamt .fund .est, body.hideamt .fund .amtday, body.hideamt .mval, body.hideamt .perf-num {
+body.hideamt .big, body.hideamt .today, body.hideamt .asset .sub span, body.hideamt .asset .predrow span, body.hideamt .fund .amt, body.hideamt .fund .c2, body.hideamt .fund .est, body.hideamt .mval, body.hideamt .perf-num {
     filter:blur(5px);
     user-select:none
   }
