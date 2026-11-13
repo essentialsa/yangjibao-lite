@@ -1,12 +1,13 @@
 diff --git a/README.md b/README.md
-index 6f2bb42..5f8401d 100644
+index 6f2bb42..a895794 100644
 --- a/README.md
 +++ b/README.md
-@@ -70,10 +70,75 @@
+@@ -70,10 +70,94 @@
  **我的**
  - 主题：日间 / 夜间 / 跟随系统，顶栏一键切换
  - 运行日志、数据源自检、JSON 导出
 +- **批量导入**：粘贴文本或 JSON，一次导入多只持仓（见下）
++- **定投管理**（v1.2.0 新增）：每月固定一天买固定金额，记一笔就自动算好份额与均价（见下）
  - **AI 校准**：自己填 API Key，用 DeepSeek 做误差归因
  
  ---
@@ -45,6 +46,24 @@ index 6f2bb42..5f8401d 100644
 +
 +APK 由 GitHub Actions 自动打包（见 `.github/workflows/build-apk.yml`）：每次推送到 `main` 后，在仓库的 Actions 页面下载 `yjblite-debug` 产物即可。注意：debug 包签名与作者发布的 release 包不同，覆盖安装会被系统拒绝，需先在旧 App 里「导出数据」备份，再卸载旧版、装新版、进「批量导入」把导出的 JSON 粘贴回来。
 +
++## 定投管理（本 fork 新增，v1.2.0）
++
++批量导入只能录静态持仓（份额 + 成本），没有定投概念；每月买一次，份额和均价都在变，只能手动重导。定投把这件事变成：建一个计划 → 每次买完记一笔 → 持仓自动更新。
++
++入口在「我的 → 设置 → 数据 → 定投管理」。
++
++**建计划**：选一只基金，填每期金额（元）、每月几号（1-31）、开始日期。建计划那一刻的持仓份额与均价会被记为「基线」——之前已经持有的部分不算定投买入，但会参与均价计算。同一只基金只能有一个计划。
++
++**记一笔**：买完之后在计划卡片上点「记一笔」。日期默认今天，金额默认每期金额，净值默认当日最新净值，份额按「金额 ÷ 净值」自动算出来；四个都能改——平台扣了手续费就按实到份额改，均价按实到算。也可以补登过去的购买（比如 11-13 买的、11-14 才装新版）。
++
++**核心规则**：定投基金的持仓份额与均价永远等于「基线 + 购买记录」推导出来的值。删掉一笔购买记录，持仓按剩余记录重算；改计划（金额/日期/暂停）不改基线。收益分析读的是持仓，所以定投的收益口径和普通持仓完全一致，不用另算。份额变动会同步记一条持仓流水，历史收益不会把加仓当成赚了。
++
++**列表里能看到**：每月几号、每期多少钱、累计投入、总份额、均价、当前市值、收益，以及下次购买日（只显示，不发提醒——定投不设任何提醒和通知）。
++
++**不要直接改定投基金的持仓**：持仓页手动改份额会被下一次记账覆盖。要改数请改购买记录（记录列表里可删）。
++
++**重装不丢**：「导出数据」的 JSON 里包含定投计划与购买记录，重装流程和以前一样——旧 App 里导出 → 卸载旧版 → 装新版 → 进「批量导入」把 JSON 粘贴回来，定投数据跟着恢复，持仓按推导值重算。以前导出的旧格式备份（没有定投数据）照样能导入，只是不带定投。
++
 +---
 +
 +## 收益分析（本 fork 新增，v1.1.3）
@@ -78,7 +97,7 @@ index 6f2bb42..5f8401d 100644
  ## 预估是怎么算的
  
  盘中基金净值还没公布，但市场在动。三种方法各有各的适用面：
-@@ -156,6 +221,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
+@@ -156,6 +240,10 @@ AI 诊断：「指数拟合不准，β漂移，误差来回跳」
  走 OpenAI 兼容协议，所以不止官方 API：自建代理、本地 Ollama 的 `/v1`、
  各家云厂商的兼容端点都能用。默认填的是 `deepseek-v4-flash`。
  
@@ -90,7 +109,7 @@ index 6f2bb42..5f8401d 100644
  
  ---
 diff --git a/app/build.gradle.kts b/app/build.gradle.kts
-index 58d696c..c2a0ec0 100644
+index 58d696c..9d53866 100644
 --- a/app/build.gradle.kts
 +++ b/app/build.gradle.kts
 @@ -12,8 +12,8 @@ android {
@@ -99,13 +118,13 @@ index 58d696c..c2a0ec0 100644
          targetSdk = 35
 -        versionCode = 1
 -        versionName = "1.0.1"
-+        versionCode = 11
-+        versionName = "1.1.9"
++        versionCode = 12
++        versionName = "1.2.0"
  
          // 只保留真机用的 ABI。
          // 之前打了 4 个 ABI，x86/x86_64 的 OCR 模型占 23MB，手机上完全用不到。
 diff --git a/app/src/main/assets/index.html b/app/src/main/assets/index.html
-index c72eeee..f77de93 100644
+index c72eeee..8c50279 100644
 --- a/app/src/main/assets/index.html
 +++ b/app/src/main/assets/index.html
 @@ -386,9 +386,16 @@
@@ -197,6 +216,15 @@ index c72eeee..f77de93 100644
        lagDays: last ? dayGap(last.date) : null,
      };
    },
+@@ -6664,7 +6699,7 @@ const db = {
+    * 可能来不及提交，而 localStorage 是同步落盘的。
+    * 剩下的大块数据（历史 / 日志 / 账本）只写 IndexedDB，不受 5MB 限制。
+    */
+-  MIRROR: ['holdings', 'watch', 'hideAmount', 'predictOn', 'logOn', 'themeMode'],
++  MIRROR: ['holdings', 'watch', 'hideAmount', 'predictOn', 'logOn', 'themeMode', 'dcaPlans', 'dcaLog'],
+ 
+   _isMirror(k) { return this.MIRROR.indexOf(k) >= 0; },
+ 
 @@ -7085,7 +7120,7 @@ function fundType(name, trend) {
    const n = name || '';
  
@@ -1456,15 +1484,23 @@ index c72eeee..f77de93 100644
    S.perfBusy = false;
    render();
  }
-@@ -11704,6 +12547,7 @@ function viewSettings() {
+@@ -11704,12 +12547,14 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
 +    + setRow("miBulkImport", "批量导入", "粘贴文本或 JSON，一次导入多只持仓")
++    + setRow("miDca", "定投管理", dcaSettingsDesc())
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -12405,6 +13249,14 @@ function bindGlobal() {
+ 
+   html += '<div class="newsend" style="line-height:1.9">'
+-    + '养基宝 Lite · v1<br>'
++    + '养基宝 Lite · v1.2.0<br>'
+     + '数据仅供参考，不构成投资建议</div>';
+ 
+   return html;
+@@ -12405,6 +13250,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -1479,15 +1515,26 @@ index c72eeee..f77de93 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -12612,6 +13464,7 @@ function bindGlobal() {
+@@ -12604,7 +13457,8 @@ function bindGlobal() {
+       toast('已清空'); return;
+     }
+     if (e.target.closest('#miExport')) {
+-      const data = JSON.stringify({ holdings: S.holdings, watch: S.watch }, null, 2);
++      dca.load();
++      const data = JSON.stringify({ holdings: S.holdings, watch: S.watch, dcaPlans: dca.plans, dcaLog: dca.log }, null, 2);
+       openSheet(`<h3>导出数据</h3>
+         <textarea readonly style="width:100%;height:220px;background:var(--card);
+           border:1px solid var(--line);border-radius:10px;color:var(--fg);
+@@ -12612,6 +13466,8 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
 +    if (e.target.closest('#miBulkImport')) { openBulkImport(); return; }
++    if (e.target.closest('#miDca')) { openDca(); return; }
    });
  
    /*
-@@ -12926,6 +13779,372 @@ function askNewGroup() {
+@@ -12926,6 +13782,988 @@ function askNewGroup() {
    };
  }
  
@@ -1534,7 +1581,10 @@ index c72eeee..f77de93 100644
 +          const r = this.fromObject(o, i + 1);
 +          (r.error ? errors : rows).push(r);
 +        });
-+        return { rows: this.dedupe(rows), errors };
++        // 导出 JSON 里还可能有定投数据（v1.2.0 起导出带上）
++        const dcaData = dca.parseExport(j);
++        if (dcaData && dcaData.errors.length) errors.push(...dcaData.errors.map(e => ({ error: e })));
++        return { rows: this.dedupe(rows), errors, dca: dcaData };
 +      } catch (e) { /* 不是合法 JSON，按文本继续解析 */ }
 +    }
 +
@@ -1746,13 +1796,18 @@ index c72eeee..f77de93 100644
 +      '<div class="t-sm" style="color:var(--up);padding:4px 0">' + bulkImport.esc(e.error) + '</div>').join('');
 +    // 换算失败的行不进确认列表，按钮上的只数就是实际会导入的只数
 +    const okRows = parsed.rows.filter(r => r.gain == null || r.costNav != null);
-+    box.innerHTML = rowHtml + errHtml
-+      + (okRows.length
-+        ? '<button class="btn primary" id="biOk" style="margin-top:10px">确认导入 '
-+          + okRows.length + ' 只</button>'
++    const dcaHtml = parsed.dca
++      ? '<div class="t-sm" style="padding:4px 0">定投：计划 ' + parsed.dca.plans.length + ' 个，购买记录 ' + parsed.dca.logCount + ' 条（将覆盖现有定投数据）</div>'
++      : '';
++    const btnLabel = okRows.length
++      ? '确认导入 ' + okRows.length + ' 只' + (parsed.dca ? ' + 定投数据' : '')
++      : '确认导入定投数据';
++    box.innerHTML = rowHtml + errHtml + dcaHtml
++      + (okRows.length || parsed.dca
++        ? '<button class="btn primary" id="biOk" style="margin-top:10px">' + btnLabel + '</button>'
 +        : '<div class="t-dim t-sm" style="padding:8px 0">没有可导入的行。</div>');
 +    const ok = document.getElementById('biOk');
-+    if (ok) ok.onclick = () => bulkImportApply(okRows);
++    if (ok) ok.onclick = () => bulkImportApply(okRows, parsed.dca);
 +  };
 +
 +  // 选文件：把文件内容读进粘贴框，再走同一套解析预览。
@@ -1805,7 +1860,7 @@ index c72eeee..f77de93 100644
 +}
 +
 +/** 把预览通过的行写进持仓（与单只添加同一套保存逻辑）。 */
-+async function bulkImportApply(rows) {
++async function bulkImportApply(rows, dcaData) {
 +  let added = 0, updated = 0;
 +  const failed = [];
 +  for (const r of rows) {
@@ -1840,11 +1895,14 @@ index c72eeee..f77de93 100644
 +      txLog.record(r.code, r.buyDate || todayStr(), r.shares);
 +    }
 +  }
++  // 导入 JSON 里带了定投数据：整批替换，并把涉及基金的持仓按推导值重算
++  const dcaR = dcaData ? dca.applyImport(dcaData) : { plans: 0, logCount: 0 };
 +  store.save();
 +  closeSheet();
 +  await refreshNav();
 +  render();
-+  toast('已导入 ' + (added + updated) + ' 只（新增 ' + added + '，更新 ' + updated + '）');
++  toast('已导入 ' + (added + updated) + ' 只（新增 ' + added + '，更新 ' + updated + '）'
++    + (dcaR.plans ? '，定投计划 ' + dcaR.plans + ' 个、购买记录 ' + dcaR.logCount + ' 条' : ''));
 +  // 按收益换算失败的行没入库，在这里把原因交代清楚（toast 只显示 1.7 秒，写不下）。
 +  if (failed.length) {
 +    openSheet('<h3>有 ' + failed.length + ' 只未导入</h3>'
@@ -1857,10 +1915,615 @@ index c72eeee..f77de93 100644
 +  }
 +}
 +
++/* ---------------- 定投管理（v1.2.0 新增） ---------------- */
++
++/**
++ * 定投：每月固定一天买固定金额，份额与均价自动算。
++ *
++ * 背景：批量导入只能录静态持仓（份额 + 成本），没有定投概念；
++ * 每月买一次，份额和均价都在变，只能手动重导。定投把这件事
++ * 变成：建一个计划 → 每次买完记一笔 → 持仓自动更新。
++ *
++ * 数据模型（存在 db 里，和 holdings 一个待遇，导出/导入也带上）：
++ *   计划 dcaPlans: [{code, name, amount, day, startDate, active,
++ *                    baseShares, baseCostNav}]
++ *     amount 每期金额（元），day 每月几号（1-31），
++ *     startDate 计划开始日，active 是否执行中，
++ *     baseShares/baseCostNav 建计划那天持仓的份额/均价（基线）。
++ *   记录 dcaLog: {code: [{date, amount, nav, shares}]}
++ *     date 购买日，amount 实付金额，nav 当日净值，
++ *     shares 实际到账份额（金额 / 净值算出，可手动改；
++ *     平台扣了手续费就按实到份额填，均价自然就对了）。
++ *
++ * 核心不变量：定投基金的持仓份额与均价永远等于
++ *   基线 + 购买记录 推导出来的值：
++ *   份额 = baseShares + Σ shares
++ *   均价 = (baseShares × baseCostNav + Σ amount) / 份额
++ * 记一笔、删一笔、导入恢复都会重算并写回持仓；收益分析读持仓，
++ * 所以不用另改口径。
++ *
++ * 份额变动同时同步 txLog 快照（和批量导入 / 单只编辑同一套做法，
++ * 否则历史收益会把加仓当成赚了）。同步时保留基线日之前的快照
++ * （那是建计划前的持仓历史），只重建基线日及之后的快照；
++ * 所以直接改定投基金的持仓（持仓页编辑）会被下一次定投重算覆盖，
++ * 要改数请改购买记录，不要直接改持仓。
++ *
++ * 注意：定投只管记账，不发提醒、不发通知（用户明确不要提醒），
++ * 下次日期只在列表里显示。
++ */
++const dca = {
++  PLANS_KEY: 'dcaPlans',
++  LOG_KEY: 'dcaLog',
++  plans: null,
++  log: null,
++
++  load() {
++    if (this.plans !== null && this.log !== null) return;
++    let plans = [];
++    try { plans = JSON.parse(db.get(this.PLANS_KEY) || '[]'); } catch (e) { plans = []; }
++    if (!Array.isArray(plans)) plans = [];
++    this.plans = plans.map(p => this.validatePlan(p).plan).filter(Boolean);
++    let log = {};
++    try { log = JSON.parse(db.get(this.LOG_KEY) || '{}'); } catch (e) { log = {}; }
++    if (!log || typeof log !== 'object' || Array.isArray(log)) log = {};
++    const codes = new Set(this.plans.map(p => p.code));
++    this.log = {};
++    Object.keys(log).forEach(code => {
++      if (!codes.has(code)) return;
++      const arr = Array.isArray(log[code]) ? log[code] : [];
++      const es = arr.map(e => this.validateEntry(e).entry).filter(Boolean);
++      es.sort((a, b) => a.date < b.date ? -1 : 1);
++      if (es.length) this.log[code] = es;
++    });
++  },
++
++  save() {
++    db.set(this.PLANS_KEY, JSON.stringify(this.plans || []));
++    db.set(this.LOG_KEY, JSON.stringify(this.log || {}));
++  },
++
++  validatePlan(p) {
++    if (!p || typeof p !== 'object') return { plan: null, error: '不是对象' };
++    const code = String(p.code || '').trim();
++    if (!/^\d{6}$/.test(code)) return { plan: null, error: '基金代码应为 6 位数字' };
++    const amount = +p.amount;
++    if (!isFinite(amount) || amount <= 0) return { plan: null, error: '每期金额应大于 0' };
++    const day = Math.floor(+p.day);
++    if (!isFinite(day) || day < 1 || day > 31) return { plan: null, error: '每月几号应在 1-31 之间' };
++    const startDate = String(p.startDate || '').trim();
++    if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return { plan: null, error: '开始日期格式不对' };
++    return {
++      plan: {
++        code,
++        name: String(p.name || code).trim() || code,
++        amount: Math.round(amount * 100) / 100,
++        day,
++        startDate: startDate || todayStr(),
++        active: p.active !== false,
++        baseShares: Math.max(0, +p.baseShares || 0),
++        baseCostNav: Math.max(0, +p.baseCostNav || 0),
++      },
++      error: null,
++    };
++  },
++
++  validateEntry(e) {
++    if (!e || typeof e !== 'object') return { entry: null, error: '不是对象' };
++    const date = String(e.date || '').trim();
++    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { entry: null, error: '购买日期格式不对' };
++    const amount = +e.amount;
++    if (!isFinite(amount) || amount <= 0) return { entry: null, error: '金额应大于 0' };
++    const nav = +e.nav;
++    if (!isFinite(nav) || nav <= 0) return { entry: null, error: '净值应大于 0' };
++    const shares = +e.shares;
++    if (!isFinite(shares) || shares <= 0) return { entry: null, error: '份额应大于 0' };
++    return {
++      entry: {
++        date,
++        amount: Math.round(amount * 100) / 100,
++        nav: Math.round(nav * 10000) / 10000,
++        shares,
++      },
++      error: null,
++    };
++  },
++
++  planFor(code) {
++    this.load();
++    return this.plans.find(p => p.code === code) || null;
++  },
++
++  logFor(code) {
++    this.load();
++    return this.log[code] || [];
++  },
++
++  countActive() {
++    this.load();
++    return this.plans.filter(p => p.active !== false).length;
++  },
++
++  /**
++   * 纯推导：基线 + 购买记录 → 份额 / 均价 / 累计投入。
++   * 不碰任何外部状态，测试直接调它。
++   */
++  derive(plan, entries) {
++    const baseShares = Math.max(0, +plan.baseShares || 0);
++    const baseCostNav = Math.max(0, +plan.baseCostNav || 0);
++    let logShares = 0, logAmount = 0;
++    for (const e of (entries || [])) {
++      logShares += Math.max(0, +e.shares || 0);
++      logAmount += Math.max(0, +e.amount || 0);
++    }
++    const shares = baseShares + logShares;
++    const invested = baseShares * baseCostNav + logAmount;
++    const costNav = shares > 0 ? invested / shares : 0;
++    return { shares, costNav, invested, logShares, logAmount, baseShares, baseCostNav };
++  },
++
++  /**
++   * 下次购买日（纯函数）：从今天所在月开始找，第一个
++   * 「当月没有购买记录」的 day 号；day 超过当月天数就取月底。
++   * 计划没开始（startDate 在未来）就从开始日那月找。
++   * 已暂停返回 null。只做显示，不发提醒。
++   */
++  nextDate(plan, today, entries) {
++    if (!plan || plan.active === false) return null;
++    const day = Math.min(31, Math.max(1, Math.floor(+plan.day || 1)));
++    const t = today || todayStr();
++    const from = (plan.startDate && plan.startDate > t) ? plan.startDate : t;
++    const fy = +from.slice(0, 4), fm = +from.slice(5, 7);
++    const log = entries || [];
++    for (let k = 0; k < 24; k++) {
++      const yy = fy + Math.floor((fm - 1 + k) / 12);
++      const mm = (fm - 1 + k) % 12 + 1;
++      const lastDay = new Date(yy, mm, 0).getDate();
++      const dd = Math.min(day, lastDay);
++      const cand = yy + '-' + String(mm).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
++      if (cand < from) continue;
++      if (log.some(e => e.date.slice(0, 7) === cand.slice(0, 7))) continue;
++      return cand;
++    }
++    return null;
++  },
++
++  createPlan(plan) {
++    this.load();
++    const v = this.validatePlan(plan);
++    if (v.error) return { ok: false, error: v.error };
++    if (this.planFor(v.plan.code)) return { ok: false, error: '该基金已有定投计划' };
++    // 基线 = 建计划这一刻的持仓（没有持仓就是 0）
++    const h = S.holdings.find(x => x.code === v.plan.code);
++    v.plan.baseShares = h ? Math.max(0, +h.shares || 0) : 0;
++    v.plan.baseCostNav = h ? Math.max(0, +h.costNav || 0) : 0;
++    this.plans.push(v.plan);
++    this.save();
++    return { ok: true, plan: v.plan };
++  },
++
++  updatePlan(code, patch) {
++    this.load();
++    const plan = this.planFor(code);
++    if (!plan) return { ok: false, error: '计划不存在' };
++    const merged = Object.assign({}, plan, patch, { code });
++    const v = this.validatePlan(merged);
++    if (v.error) return { ok: false, error: v.error };
++    // 基线是建计划时定的，编辑不改基线
++    v.plan.baseShares = plan.baseShares;
++    v.plan.baseCostNav = plan.baseCostNav;
++    Object.assign(plan, v.plan);
++    this.save();
++    return { ok: true, plan };
++  },
++
++  deletePlan(code) {
++    this.load();
++    this.plans = this.plans.filter(p => p.code !== code);
++    delete this.log[code];
++    this.save();
++    // 持仓不动：保留最后一次推导出的份额与均价
++  },
++
++  addPurchase(code, entry) {
++    this.load();
++    const plan = this.planFor(code);
++    if (!plan) return { ok: false, error: '计划不存在' };
++    const v = this.validateEntry(entry);
++    if (v.error) return { ok: false, error: v.error };
++    if (v.entry.date > todayStr()) return { ok: false, error: '不能记未来的购买' };
++    if (!this.log[code]) this.log[code] = [];
++    this.log[code].push(v.entry);
++    this.log[code].sort((a, b) => a.date < b.date ? -1 : 1);
++    this.applyToHolding(code);
++    this.save();
++    return { ok: true, entry: v.entry };
++  },
++
++  deletePurchase(code, idx) {
++    this.load();
++    const arr = this.log[code];
++    if (!arr || idx < 0 || idx >= arr.length) return { ok: false, error: '记录不存在' };
++    arr.splice(idx, 1);
++    if (!arr.length) delete this.log[code];
++    this.applyToHolding(code);
++    this.save();
++    return { ok: true };
++  },
++
++  /**
++   * 核心不变量落盘：把推导出的份额/均价写回持仓，并同步 txLog。
++   * 基金还没持仓且推导出份额 > 0 时建一条持仓（基线为 0 的新定投
++   * 记第一笔后就是这种情况）。
++   */
++  applyToHolding(code) {
++    this.load();
++    const plan = this.planFor(code);
++    if (!plan) return false;
++    const d = this.derive(plan, this.logFor(code));
++    let h = S.holdings.find(x => x.code === code);
++    if (!h) {
++      if (!(d.shares > 0)) return false;
++      h = { code, name: plan.name || code, shares: 0, costNav: 0, group: '默认', divMode: 'cash', buyDate: plan.startDate || null, addedAt: todayStr() };
++      S.holdings.push(h);
++    }
++    h.shares = d.shares;
++    h.costNav = d.costNav;
++    this.syncTxLog(code);
++    store.save();
++    return true;
++  },
++
++  /**
++   * 按「基线 + 购买记录」重建该基金的 txLog 快照。
++   * 保留基线日之前的快照（建计划前的持仓历史），只重建基线日
++   * 及之后的快照——所以删一笔、补登一笔旧的，都能正确重算。
++   * 基线日 = 开始日与第一笔购买日中较早的一天（允许补登开始日
++   * 之前的购买，比如 11-13 买的、11-14 才建计划）。
++   */
++  syncTxLog(code) {
++    const plan = this.planFor(code);
++    if (!plan) return;
++    const entries = this.logFor(code);
++    const firstDate = entries.length ? entries[0].date : null;
++    const baseDate = (plan.startDate && firstDate)
++      ? (plan.startDate < firstDate ? plan.startDate : firstDate)
++      : (plan.startDate || firstDate || todayStr());
++    const derived = [];
++    if (plan.baseShares > 0) derived.push({ d: baseDate, s: plan.baseShares });
++    let cum = plan.baseShares;
++    for (const e of entries) {
++      cum += (+e.shares || 0);
++      const last = derived[derived.length - 1];
++      if (last && last.d === e.date) last.s = cum;
++      else derived.push({ d: e.date, s: cum });
++    }
++    const data = txLog.load();
++    const arr = (data[code] || []).filter(it => it.d < baseDate);
++    for (const it of derived) {
++      let i = 0;
++      while (i < arr.length && arr[i].d < it.d) i++;
++      if (i < arr.length && arr[i].d === it.d) arr[i].s = it.s;
++      else arr.splice(i, 0, { d: it.d, s: it.s });
++    }
++    data[code] = arr;
++    txLog.save();
++  },
++
++  /**
++   * 定投统计（给列表页用）：推导值 + 持仓算出的市值/收益。
++   * 没有持仓时市值与收益是 0（还没买进）。
++   */
++  stats(code) {
++    const plan = this.planFor(code);
++    if (!plan) return null;
++    const entries = this.logFor(code);
++    const d = this.derive(plan, entries);
++    const h = S.holdings.find(x => x.code === code);
++    let value = 0, profit = 0, profitPct = 0, curNav = 0;
++    if (h) {
++      const c = holdCalc(h);
++      value = c.value; profit = c.profit; profitPct = c.profitPct; curNav = c.nav;
++    }
++    return {
++      plan, entries,
++      shares: d.shares, costNav: d.costNav,
++      invested: d.invested, logShares: d.logShares, logAmount: d.logAmount,
++      hasHolding: !!h, value, profit, profitPct, curNav,
++      next: this.nextDate(plan, todayStr(), entries),
++    };
++  },
++
++  /**
++   * 解析导出 JSON 里的定投部分（给批量导入用）。
++   * 没有定投数据返回 null；有则返回清洗后的 {plans, log, logCount, errors}。
++   * 没有对应计划的购买记录会被忽略（写进 errors）。
++   */
++  parseExport(j) {
++    if (!j || typeof j !== 'object') return null;
++    const hasPlans = Array.isArray(j.dcaPlans);
++    const hasLog = j.dcaLog && typeof j.dcaLog === 'object' && !Array.isArray(j.dcaLog);
++    if (!hasPlans && !hasLog) return null;
++    const plans = [], errors = [];
++    (j.dcaPlans || []).forEach((p, i) => {
++      const v = this.validatePlan(p);
++      if (v.error) errors.push('定投计划第 ' + (i + 1) + ' 条：' + v.error);
++      else if (plans.some(x => x.code === v.plan.code)) errors.push('定投计划第 ' + (i + 1) + ' 条：' + v.plan.code + ' 重复');
++      else plans.push(v.plan);
++    });
++    const planCodes = new Set(plans.map(p => p.code));
++    const log = {};
++    let logCount = 0;
++    Object.keys(j.dcaLog || {}).forEach(code => {
++      const arr = j.dcaLog[code];
++      if (!Array.isArray(arr)) { errors.push('定投记录 ' + code + ' 不是数组'); return; }
++      if (!planCodes.has(code)) { errors.push('定投记录 ' + code + ' 没有对应计划，已忽略'); return; }
++      const es = [];
++      arr.forEach((e, i) => {
++        const v = this.validateEntry(e);
++        if (v.error) errors.push('定投记录 ' + code + ' 第 ' + (i + 1) + ' 条：' + v.error);
++        else es.push(v.entry);
++      });
++      es.sort((a, b) => a.date < b.date ? -1 : 1);
++      if (es.length) { log[code] = es; logCount += es.length; }
++    });
++    return { plans, log, logCount, errors };
++  },
++
++  /**
++   * 导入时整批替换定投数据，并把涉及基金的持仓按推导值重算。
++   * 返回导入的计划数与记录数（给导入结果提示用）。
++   */
++  applyImport(dcaData) {
++    if (!dcaData) return { plans: 0, logCount: 0 };
++    this.load();
++    this.plans = dcaData.plans;
++    this.log = dcaData.log;
++    this.save();
++    const affected = new Set(dcaData.plans.map(p => p.code));
++    for (const code of affected) this.applyToHolding(code);
++    return { plans: dcaData.plans.length, logCount: dcaData.logCount };
++  },
++};
++
++/* ---------------- 定投界面 ---------------- */
++
++const dcaEsc = v => String(v == null ? '' : v)
++  .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
++
++/** 设置页「定投管理」那行的副标题：执行中个数 + 最近的下次日期。 */
++function dcaSettingsDesc() {
++  dca.load();
++  if (!dca.plans.length) return '每月定额买入，自动算均价';
++  const act = dca.countActive();
++  const nexts = dca.plans.filter(p => p.active !== false)
++    .map(p => dca.nextDate(p, todayStr(), dca.logFor(p.code)))
++    .filter(Boolean).sort();
++  return act + ' 个执行中' + (nexts.length ? ' · 下次 ' + nexts[0] : '');
++}
++
++/** 定投计划列表（从 设置 → 数据 → 定投管理 进来）。 */
++function openDca() {
++  dca.load();
++  const cards = dca.plans.map(p => {
++    const st = dca.stats(p.code);
++    const paused = p.active === false;
++    const nextTxt = st.next || (paused ? '已暂停' : '—');
++    const valueTxt = st.hasHolding ? '¥' + moneyFull0(st.value) : '--';
++    const profitTxt = st.hasHolding
++      ? moneyFull(st.profit) + '（' + pctTxt(st.profitPct) + '）'
++      : '--';
++    return '<div class="pcard" style="padding:14px;margin-bottom:10px">'
++      + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
++      + '<div><b>' + dcaEsc(p.name) + '</b> <span class="t-dim t-sm">' + p.code + '</span></div>'
++      + '<span class="t-sm"' + (paused ? ' style="color:var(--dim)"' : '') + '>' + (paused ? '已暂停' : '执行中') + '</span>'
++      + '</div>'
++      + '<div class="kv"><span class="k">每月</span><span class="v">' + p.day + ' 日 · ' + fmt(p.amount, 0) + ' 元</span></div>'
++      + '<div class="kv"><span class="k">下次</span><span class="v">' + nextTxt + '</span></div>'
++      + '<div class="kv"><span class="k">累计投入</span><span class="v">¥' + moneyFull0(st.invested) + '（已买 ' + st.entries.length + ' 笔）</span></div>'
++      + '<div class="kv"><span class="k">总份额 / 均价</span><span class="v">' + fmt(st.shares, 2) + ' 份 · ' + (st.shares > 0 ? fmt(st.costNav, 4) : '--') + '</span></div>'
++      + '<div class="kv"><span class="k">当前市值 / 收益</span><span class="v">' + valueTxt + ' / ' + profitTxt + '</span></div>'
++      + '<div style="display:flex;gap:6px;margin-top:10px">'
++      + '<button class="btn primary" style="flex:1" onclick="openDcaBuy(\'' + p.code + '\')">记一笔</button>'
++      + '<button class="btn" style="flex:1" onclick="openDcaLog(\'' + p.code + '\')">记录</button>'
++      + '<button class="btn" style="flex:1" onclick="dcaTogglePlan(\'' + p.code + '\')">' + (paused ? '恢复' : '暂停') + '</button>'
++      + '<button class="btn" style="flex:1" onclick="openDcaPlanForm(\'' + p.code + '\')">编辑</button>'
++      + '</div>'
++      + '<div style="margin-top:8px;text-align:right"><span class="t-xs t-dim" style="cursor:pointer" onclick="dcaDeletePlan(\'' + p.code + '\')">删除计划</span></div>'
++      + '</div>';
++  }).join('');
++  openSheet(
++    '<div class="sheet-x" onclick="closeSheet()">✕</div>'
++    + '<div class="sheet-h">定投管理</div>'
++    + '<div class="sheet-body">'
++    + (cards || '<div class="t-dim t-sm" style="padding:12px 0">还没有定投计划。每月固定一天买固定金额，记一笔就自动算好份额与均价。</div>')
++    + '<button class="btn primary" onclick="openDcaPlanForm()">新建定投计划</button>'
++    + '<div class="t-xs t-dim" style="margin-top:10px">份额与均价由购买记录自动推导；要改数请改购买记录，不要直接改持仓（会被下一次记账覆盖）。不发提醒，只显示下次日期。</div>'
++    + '</div>'
++  );
++}
++
++/** 新建 / 编辑定投计划。code 为空时新建。 */
++function openDcaPlanForm(code) {
++  const plan = code ? dca.planFor(code) : null;
++  const isEdit = !!plan;
++  const t = todayStr();
++  openSheet(`
++    <div class="sheet-x" onclick="closeSheet()">✕</div>
++    <div class="sheet-h">${isEdit ? '编辑定投计划' : '新建定投计划'}</div>
++    <div class="sheet-body">
++    ${isEdit
++      ? `<div class="kv"><span class="k">基金</span><span class="v">${dcaEsc(plan.name)} · ${plan.code}</span></div>`
++      : `<div class="field"><label>基金代码（6 位）</label>
++        <input id="dcaCode" inputmode="numeric" maxlength="6" placeholder="如 007466"></div>`}
++    <div class="field"><label>每期金额（元）</label>
++      <input id="dcaAmount" type="number" inputmode="decimal" placeholder="如 1000"
++        value="${isEdit ? plan.amount : ''}"></div>
++    <div class="field"><label>每月几号</label>
++      <input id="dcaDay" type="number" inputmode="numeric" placeholder="1-31，如 15"
++        value="${isEdit ? plan.day : ''}"></div>
++    <div class="field"><label>开始日期</label>
++      <input id="dcaStart" type="date" value="${isEdit ? plan.startDate : t}"></div>
++    ${isEdit ? `<div class="field"><label>状态</label>
++      <div class="sectabs" style="margin:0">
++        <button type="button" data-active="1" class="${plan.active !== false ? 'on' : ''}" style="flex:1">执行中</button>
++        <button type="button" data-active="0" class="${plan.active === false ? 'on' : ''}" style="flex:1">已暂停</button>
++      </div></div>` : ''}
++    ${isEdit && plan.baseShares > 0
++      ? `<div class="t-sm t-dim" style="margin:-4px 0 12px">基线：建计划时持有 ${fmt(plan.baseShares, 2)} 份，均价 ${fmt(plan.baseCostNav, 4)}（建计划时定的，编辑不改）。</div>`
++      : ''}
++    <button class="btn primary" id="dcaPlanOk">保存</button>
++    <button class="btn" onclick="closeSheet()">取消</button>
++    </div>
++  `);
++
++  // 状态切换（编辑时才有）
++  let active = plan ? plan.active !== false : true;
++  const box = document.getElementById('sheet');
++  box.querySelectorAll('[data-active]').forEach(b => {
++    b.onclick = () => {
++      box.querySelectorAll('[data-active]').forEach(x => x.classList.remove('on'));
++      b.classList.add('on');
++      active = b.dataset.active === '1';
++    };
++  });
++
++  document.getElementById('dcaPlanOk').onclick = async () => {
++    const amount = parseFloat(document.getElementById('dcaAmount').value);
++    const day = parseInt(document.getElementById('dcaDay').value, 10);
++    const startDate = document.getElementById('dcaStart').value || todayStr();
++    if (isEdit) {
++      const r = dca.updatePlan(code, { amount, day, startDate, active });
++      if (!r.ok) { toast(r.error); return; }
++      closeSheet(); render(); toast('已保存'); openDca();
++      return;
++    }
++    const codeVal = document.getElementById('dcaCode').value.trim();
++    if (!/^\d{6}$/.test(codeVal)) { toast('基金代码应为 6 位数字'); return; }
++    // 查名字（和批量导入同一套）；查不到就用代码当名字
++    let name = codeVal;
++    try {
++      const found = (await api.search(codeVal)).find(o => o.code === codeVal);
++      if (found) name = found.name;
++    } catch (e) { /* ignore */ }
++    const r = dca.createPlan({ code: codeVal, name, amount, day, startDate, active: true });
++    if (!r.ok) { toast(r.error); return; }
++    closeSheet(); render(); toast('定投计划已创建'); openDca();
++  };
++}
++
++/** 给一个计划记一笔购买。净值默认取当日最新净值，份额自动算出，都可改。 */
++function openDcaBuy(code) {
++  const plan = dca.planFor(code);
++  if (!plan) { toast('计划不存在'); return; }
++  const t = todayStr();
++  const pair = navPairOf(code);
++  const curNav = pair && isFinite(pair.curNav) && pair.curNav > 0 ? pair.curNav : null;
++  openSheet(`
++    <div class="sheet-x" onclick="closeSheet()">✕</div>
++    <div class="sheet-h">记一笔 · ${dcaEsc(plan.name)}</div>
++    <div class="sheet-body">
++    <div class="field"><label>购买日期</label>
++      <input id="dcaBuyDate" type="date" value="${t}"></div>
++    <div class="field"><label>实付金额（元）</label>
++      <input id="dcaBuyAmount" type="number" inputmode="decimal"
++        value="${plan.amount}" placeholder="如 1000"></div>
++    <div class="field"><label>当日净值</label>
++      <input id="dcaBuyNav" type="number" inputmode="decimal"
++        value="${curNav != null ? curNav : ''}" placeholder="如 1.2345"></div>
++    <div class="field"><label>到账份额（自动算出，可改）</label>
++      <input id="dcaBuyShares" type="number" inputmode="decimal" placeholder="金额 ÷ 净值"></div>
++    <div class="t-xs t-dim" style="margin:-4px 0 12px">平台扣了手续费就按实到份额改，份额与均价按实到算。</div>
++    <button class="btn primary" id="dcaBuyOk">保存</button>
++    <button class="btn" onclick="closeSheet()">取消</button>
++    </div>
++  `);
++
++  // 金额或净值一改，份额就重算（手动改完份额再动金额/净值会覆盖一次）
++  const amtEl = document.getElementById('dcaBuyAmount');
++  const navEl = document.getElementById('dcaBuyNav');
++  const shEl = document.getElementById('dcaBuyShares');
++  const calc = () => {
++    const a = parseFloat(amtEl.value), n = parseFloat(navEl.value);
++    if (a > 0 && n > 0) shEl.value = (Math.round(a / n * 100) / 100).toFixed(2);
++  };
++  amtEl.oninput = calc;
++  navEl.oninput = calc;
++  calc();
++
++  document.getElementById('dcaBuyOk').onclick = async () => {
++    const date = document.getElementById('dcaBuyDate').value || todayStr();
++    const amount = parseFloat(amtEl.value);
++    const nav = parseFloat(navEl.value);
++    const shares = parseFloat(shEl.value);
++    const r = dca.addPurchase(code, { date, amount, nav, shares });
++    if (!r.ok) { toast(r.error); return; }
++    closeSheet();
++    await refreshNav();
++    render();
++    toast('已记一笔');
++    openDca();
++  };
++}
++
++/** 一个计划的购买记录（最新在前），可删。 */
++function openDcaLog(code) {
++  const plan = dca.planFor(code);
++  if (!plan) { toast('计划不存在'); return; }
++  const entries = dca.logFor(code);
++  const rows = entries.map((e, i) => ({ e, i })).reverse().map(({ e, i }) =>
++    '<div class="kv"><span class="k">' + e.date + ' · ¥' + moneyFull0(e.amount) + ' @ ' + fmt(e.nav, 4) + '</span>'
++    + '<span class="v">' + fmt(e.shares, 2) + ' 份 <span class="t-xs t-dim" style="cursor:pointer" onclick="dcaDeleteLog(\'' + code + '\',' + i + ')">删除</span></span></div>'
++  ).join('');
++  const baseTxt = plan.baseShares > 0
++    ? '<div class="t-sm t-dim" style="margin-bottom:8px">基线：建计划时持有 ' + fmt(plan.baseShares, 2) + ' 份，均价 ' + fmt(plan.baseCostNav, 4) + '</div>'
++    : '';
++  openSheet(
++    '<div class="sheet-x" onclick="closeSheet()">✕</div>'
++    + '<div class="sheet-h">购买记录 · ' + dcaEsc(plan.name) + '</div>'
++    + '<div class="sheet-body">'
++    + baseTxt
++    + (rows || '<div class="t-dim t-sm" style="padding:12px 0">还没有购买记录。</div>')
++    + '<button class="btn primary" onclick="openDcaBuy(\'' + code + '\')">记一笔</button>'
++    + '<div class="t-xs t-dim" style="margin-top:10px">删掉一笔后，持仓按剩余记录重算。</div>'
++    + '</div>'
++  );
++}
++
++/** 删除一条购买记录（重算持仓）。idx 是 dcaLog 里的原始下标。 */
++function dcaDeleteLog(code, idx) {
++  if (!confirm('删除这笔购买记录？持仓会按剩余记录重算。')) return;
++  const r = dca.deletePurchase(code, idx);
++  if (!r.ok) { toast(r.error); return; }
++  refreshNav(); render();
++  openDcaLog(code);
++  toast('已删除，持仓已重算');
++}
++
++/** 暂停 / 恢复一个计划。 */
++function dcaTogglePlan(code) {
++  const plan = dca.planFor(code);
++  if (!plan) return;
++  dca.updatePlan(code, { active: plan.active === false });
++  render();
++  openDca();
++  toast(plan.active === false ? '已恢复执行' : '已暂停');
++}
++
++/** 删除一个计划（购买记录一起删，持仓保留当前份额与均价）。 */
++function dcaDeletePlan(code) {
++  const plan = dca.planFor(code);
++  if (!plan) return;
++  if (!confirm('删除定投计划「' + plan.name + '」？购买记录会一起删除，持仓保留当前份额与均价。')) return;
++  dca.deletePlan(code);
++  render();
++  openDca();
++  toast('计划已删除');
++}
++
  /* ---------------- 持仓操作菜单 ---------------- */
  
  /** 长按持仓弹出的操作面板。 */
-@@ -13171,8 +14390,12 @@ function openEditForm(h) {
+@@ -13171,8 +15009,12 @@ function openEditForm(h) {
    setInterval(() => {
      if (document.hidden) return;
      if (!isTradingNow()) return;
@@ -2030,7 +2693,7 @@ index 2d93980..9b469e6 100644
    }
  
 diff --git a/src/04-app.js b/src/04-app.js
-index 40f6d36..1a8d6fa 100644
+index 40f6d36..c179d28 100644
 --- a/src/04-app.js
 +++ b/src/04-app.js
 @@ -2338,6 +2338,9 @@ const S = {
@@ -2079,6 +2742,15 @@ index 40f6d36..1a8d6fa 100644
        lagDays: last ? dayGap(last.date) : null,
      };
    },
+@@ -5328,7 +5354,7 @@ const db = {
+    * 可能来不及提交，而 localStorage 是同步落盘的。
+    * 剩下的大块数据（历史 / 日志 / 账本）只写 IndexedDB，不受 5MB 限制。
+    */
+-  MIRROR: ['holdings', 'watch', 'hideAmount', 'predictOn', 'logOn', 'themeMode'],
++  MIRROR: ['holdings', 'watch', 'hideAmount', 'predictOn', 'logOn', 'themeMode', 'dcaPlans', 'dcaLog'],
+ 
+   _isMirror(k) { return this.MIRROR.indexOf(k) >= 0; },
+ 
 @@ -5749,7 +5775,7 @@ function fundType(name, trend) {
    const n = name || '';
  
@@ -2760,9 +3432,9 @@ index 40f6d36..1a8d6fa 100644
 +    days: seq.map(r => ({ date: r.date, mv: r.mv, flow: r.flow, div: r.div || 0, inc: r.inc || 0 })),
 +    // 单基区间盈亏分解：Σ = 区间累计盈亏（见上方恒等式）
 +    fundPnl: fundPnl,
-+  };
-+}
-+
+   };
+ }
+ 
 +/* ---- 收益分析：日收益聚合成今日 / 本月 / 本年 / 累计 ---- */
 +
 +/*
@@ -2845,9 +3517,9 @@ index 40f6d36..1a8d6fa 100644
 +      pnl: sum(daily), pct: twr(daily),
 +      from: seq[0].date,
 +    },
-   };
- }
- 
++  };
++}
++
 +/** 同步算收益分析（S.full 已在内存里，不用等网络） */
 +function computePnlStats() {
 +  try {
@@ -3338,15 +4010,23 @@ index 40f6d36..1a8d6fa 100644
    S.perfBusy = false;
    render();
  }
-@@ -10368,6 +11202,7 @@ function viewSettings() {
+@@ -10368,12 +11202,14 @@ function viewSettings() {
  
    html += setGroup("数据",
      setRow("miExport", "导出数据", "生成 JSON 文本，可自行备份")
 +    + setRow("miBulkImport", "批量导入", "粘贴文本或 JSON，一次导入多只持仓")
++    + setRow("miDca", "定投管理", dcaSettingsDesc())
      + setRow("miClear", "清空所有数据", "持仓、自选与全部缓存",
        '<span style="color:var(--up)">清空</span>')
    );
-@@ -11069,6 +11904,14 @@ function bindGlobal() {
+ 
+   html += '<div class="newsend" style="line-height:1.9">'
+-    + '养基宝 Lite · v1<br>'
++    + '养基宝 Lite · v1.2.0<br>'
+     + '数据仅供参考，不构成投资建议</div>';
+ 
+   return html;
+@@ -11069,6 +11905,14 @@ function bindGlobal() {
      const pd = e.target.closest('[data-perfd]');
      if (pd) { loadPerf(parseInt(pd.dataset.perfd, 10)); return; }
  
@@ -3361,15 +4041,26 @@ index 40f6d36..1a8d6fa 100644
      // K 线周期切换
      const kl = e.target.closest('[data-kline]');
      if (kl) {
-@@ -11276,6 +12119,7 @@ function bindGlobal() {
+@@ -11268,7 +12112,8 @@ function bindGlobal() {
+       toast('已清空'); return;
+     }
+     if (e.target.closest('#miExport')) {
+-      const data = JSON.stringify({ holdings: S.holdings, watch: S.watch }, null, 2);
++      dca.load();
++      const data = JSON.stringify({ holdings: S.holdings, watch: S.watch, dcaPlans: dca.plans, dcaLog: dca.log }, null, 2);
+       openSheet(`<h3>导出数据</h3>
+         <textarea readonly style="width:100%;height:220px;background:var(--card);
+           border:1px solid var(--line);border-radius:10px;color:var(--fg);
+@@ -11276,6 +12121,8 @@ function bindGlobal() {
          <button class="btn" onclick="closeSheet()">关闭</button>`);
        return;
      }
 +    if (e.target.closest('#miBulkImport')) { openBulkImport(); return; }
++    if (e.target.closest('#miDca')) { openDca(); return; }
    });
  
    /*
-@@ -11590,6 +12434,372 @@ function askNewGroup() {
+@@ -11590,6 +12437,988 @@ function askNewGroup() {
    };
  }
  
@@ -3416,7 +4107,10 @@ index 40f6d36..1a8d6fa 100644
 +          const r = this.fromObject(o, i + 1);
 +          (r.error ? errors : rows).push(r);
 +        });
-+        return { rows: this.dedupe(rows), errors };
++        // 导出 JSON 里还可能有定投数据（v1.2.0 起导出带上）
++        const dcaData = dca.parseExport(j);
++        if (dcaData && dcaData.errors.length) errors.push(...dcaData.errors.map(e => ({ error: e })));
++        return { rows: this.dedupe(rows), errors, dca: dcaData };
 +      } catch (e) { /* 不是合法 JSON，按文本继续解析 */ }
 +    }
 +
@@ -3628,13 +4322,18 @@ index 40f6d36..1a8d6fa 100644
 +      '<div class="t-sm" style="color:var(--up);padding:4px 0">' + bulkImport.esc(e.error) + '</div>').join('');
 +    // 换算失败的行不进确认列表，按钮上的只数就是实际会导入的只数
 +    const okRows = parsed.rows.filter(r => r.gain == null || r.costNav != null);
-+    box.innerHTML = rowHtml + errHtml
-+      + (okRows.length
-+        ? '<button class="btn primary" id="biOk" style="margin-top:10px">确认导入 '
-+          + okRows.length + ' 只</button>'
++    const dcaHtml = parsed.dca
++      ? '<div class="t-sm" style="padding:4px 0">定投：计划 ' + parsed.dca.plans.length + ' 个，购买记录 ' + parsed.dca.logCount + ' 条（将覆盖现有定投数据）</div>'
++      : '';
++    const btnLabel = okRows.length
++      ? '确认导入 ' + okRows.length + ' 只' + (parsed.dca ? ' + 定投数据' : '')
++      : '确认导入定投数据';
++    box.innerHTML = rowHtml + errHtml + dcaHtml
++      + (okRows.length || parsed.dca
++        ? '<button class="btn primary" id="biOk" style="margin-top:10px">' + btnLabel + '</button>'
 +        : '<div class="t-dim t-sm" style="padding:8px 0">没有可导入的行。</div>');
 +    const ok = document.getElementById('biOk');
-+    if (ok) ok.onclick = () => bulkImportApply(okRows);
++    if (ok) ok.onclick = () => bulkImportApply(okRows, parsed.dca);
 +  };
 +
 +  // 选文件：把文件内容读进粘贴框，再走同一套解析预览。
@@ -3687,7 +4386,7 @@ index 40f6d36..1a8d6fa 100644
 +}
 +
 +/** 把预览通过的行写进持仓（与单只添加同一套保存逻辑）。 */
-+async function bulkImportApply(rows) {
++async function bulkImportApply(rows, dcaData) {
 +  let added = 0, updated = 0;
 +  const failed = [];
 +  for (const r of rows) {
@@ -3722,11 +4421,14 @@ index 40f6d36..1a8d6fa 100644
 +      txLog.record(r.code, r.buyDate || todayStr(), r.shares);
 +    }
 +  }
++  // 导入 JSON 里带了定投数据：整批替换，并把涉及基金的持仓按推导值重算
++  const dcaR = dcaData ? dca.applyImport(dcaData) : { plans: 0, logCount: 0 };
 +  store.save();
 +  closeSheet();
 +  await refreshNav();
 +  render();
-+  toast('已导入 ' + (added + updated) + ' 只（新增 ' + added + '，更新 ' + updated + '）');
++  toast('已导入 ' + (added + updated) + ' 只（新增 ' + added + '，更新 ' + updated + '）'
++    + (dcaR.plans ? '，定投计划 ' + dcaR.plans + ' 个、购买记录 ' + dcaR.logCount + ' 条' : ''));
 +  // 按收益换算失败的行没入库，在这里把原因交代清楚（toast 只显示 1.7 秒，写不下）。
 +  if (failed.length) {
 +    openSheet('<h3>有 ' + failed.length + ' 只未导入</h3>'
@@ -3739,10 +4441,615 @@ index 40f6d36..1a8d6fa 100644
 +  }
 +}
 +
++/* ---------------- 定投管理（v1.2.0 新增） ---------------- */
++
++/**
++ * 定投：每月固定一天买固定金额，份额与均价自动算。
++ *
++ * 背景：批量导入只能录静态持仓（份额 + 成本），没有定投概念；
++ * 每月买一次，份额和均价都在变，只能手动重导。定投把这件事
++ * 变成：建一个计划 → 每次买完记一笔 → 持仓自动更新。
++ *
++ * 数据模型（存在 db 里，和 holdings 一个待遇，导出/导入也带上）：
++ *   计划 dcaPlans: [{code, name, amount, day, startDate, active,
++ *                    baseShares, baseCostNav}]
++ *     amount 每期金额（元），day 每月几号（1-31），
++ *     startDate 计划开始日，active 是否执行中，
++ *     baseShares/baseCostNav 建计划那天持仓的份额/均价（基线）。
++ *   记录 dcaLog: {code: [{date, amount, nav, shares}]}
++ *     date 购买日，amount 实付金额，nav 当日净值，
++ *     shares 实际到账份额（金额 / 净值算出，可手动改；
++ *     平台扣了手续费就按实到份额填，均价自然就对了）。
++ *
++ * 核心不变量：定投基金的持仓份额与均价永远等于
++ *   基线 + 购买记录 推导出来的值：
++ *   份额 = baseShares + Σ shares
++ *   均价 = (baseShares × baseCostNav + Σ amount) / 份额
++ * 记一笔、删一笔、导入恢复都会重算并写回持仓；收益分析读持仓，
++ * 所以不用另改口径。
++ *
++ * 份额变动同时同步 txLog 快照（和批量导入 / 单只编辑同一套做法，
++ * 否则历史收益会把加仓当成赚了）。同步时保留基线日之前的快照
++ * （那是建计划前的持仓历史），只重建基线日及之后的快照；
++ * 所以直接改定投基金的持仓（持仓页编辑）会被下一次定投重算覆盖，
++ * 要改数请改购买记录，不要直接改持仓。
++ *
++ * 注意：定投只管记账，不发提醒、不发通知（用户明确不要提醒），
++ * 下次日期只在列表里显示。
++ */
++const dca = {
++  PLANS_KEY: 'dcaPlans',
++  LOG_KEY: 'dcaLog',
++  plans: null,
++  log: null,
++
++  load() {
++    if (this.plans !== null && this.log !== null) return;
++    let plans = [];
++    try { plans = JSON.parse(db.get(this.PLANS_KEY) || '[]'); } catch (e) { plans = []; }
++    if (!Array.isArray(plans)) plans = [];
++    this.plans = plans.map(p => this.validatePlan(p).plan).filter(Boolean);
++    let log = {};
++    try { log = JSON.parse(db.get(this.LOG_KEY) || '{}'); } catch (e) { log = {}; }
++    if (!log || typeof log !== 'object' || Array.isArray(log)) log = {};
++    const codes = new Set(this.plans.map(p => p.code));
++    this.log = {};
++    Object.keys(log).forEach(code => {
++      if (!codes.has(code)) return;
++      const arr = Array.isArray(log[code]) ? log[code] : [];
++      const es = arr.map(e => this.validateEntry(e).entry).filter(Boolean);
++      es.sort((a, b) => a.date < b.date ? -1 : 1);
++      if (es.length) this.log[code] = es;
++    });
++  },
++
++  save() {
++    db.set(this.PLANS_KEY, JSON.stringify(this.plans || []));
++    db.set(this.LOG_KEY, JSON.stringify(this.log || {}));
++  },
++
++  validatePlan(p) {
++    if (!p || typeof p !== 'object') return { plan: null, error: '不是对象' };
++    const code = String(p.code || '').trim();
++    if (!/^\d{6}$/.test(code)) return { plan: null, error: '基金代码应为 6 位数字' };
++    const amount = +p.amount;
++    if (!isFinite(amount) || amount <= 0) return { plan: null, error: '每期金额应大于 0' };
++    const day = Math.floor(+p.day);
++    if (!isFinite(day) || day < 1 || day > 31) return { plan: null, error: '每月几号应在 1-31 之间' };
++    const startDate = String(p.startDate || '').trim();
++    if (startDate && !/^\d{4}-\d{2}-\d{2}$/.test(startDate)) return { plan: null, error: '开始日期格式不对' };
++    return {
++      plan: {
++        code,
++        name: String(p.name || code).trim() || code,
++        amount: Math.round(amount * 100) / 100,
++        day,
++        startDate: startDate || todayStr(),
++        active: p.active !== false,
++        baseShares: Math.max(0, +p.baseShares || 0),
++        baseCostNav: Math.max(0, +p.baseCostNav || 0),
++      },
++      error: null,
++    };
++  },
++
++  validateEntry(e) {
++    if (!e || typeof e !== 'object') return { entry: null, error: '不是对象' };
++    const date = String(e.date || '').trim();
++    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return { entry: null, error: '购买日期格式不对' };
++    const amount = +e.amount;
++    if (!isFinite(amount) || amount <= 0) return { entry: null, error: '金额应大于 0' };
++    const nav = +e.nav;
++    if (!isFinite(nav) || nav <= 0) return { entry: null, error: '净值应大于 0' };
++    const shares = +e.shares;
++    if (!isFinite(shares) || shares <= 0) return { entry: null, error: '份额应大于 0' };
++    return {
++      entry: {
++        date,
++        amount: Math.round(amount * 100) / 100,
++        nav: Math.round(nav * 10000) / 10000,
++        shares,
++      },
++      error: null,
++    };
++  },
++
++  planFor(code) {
++    this.load();
++    return this.plans.find(p => p.code === code) || null;
++  },
++
++  logFor(code) {
++    this.load();
++    return this.log[code] || [];
++  },
++
++  countActive() {
++    this.load();
++    return this.plans.filter(p => p.active !== false).length;
++  },
++
++  /**
++   * 纯推导：基线 + 购买记录 → 份额 / 均价 / 累计投入。
++   * 不碰任何外部状态，测试直接调它。
++   */
++  derive(plan, entries) {
++    const baseShares = Math.max(0, +plan.baseShares || 0);
++    const baseCostNav = Math.max(0, +plan.baseCostNav || 0);
++    let logShares = 0, logAmount = 0;
++    for (const e of (entries || [])) {
++      logShares += Math.max(0, +e.shares || 0);
++      logAmount += Math.max(0, +e.amount || 0);
++    }
++    const shares = baseShares + logShares;
++    const invested = baseShares * baseCostNav + logAmount;
++    const costNav = shares > 0 ? invested / shares : 0;
++    return { shares, costNav, invested, logShares, logAmount, baseShares, baseCostNav };
++  },
++
++  /**
++   * 下次购买日（纯函数）：从今天所在月开始找，第一个
++   * 「当月没有购买记录」的 day 号；day 超过当月天数就取月底。
++   * 计划没开始（startDate 在未来）就从开始日那月找。
++   * 已暂停返回 null。只做显示，不发提醒。
++   */
++  nextDate(plan, today, entries) {
++    if (!plan || plan.active === false) return null;
++    const day = Math.min(31, Math.max(1, Math.floor(+plan.day || 1)));
++    const t = today || todayStr();
++    const from = (plan.startDate && plan.startDate > t) ? plan.startDate : t;
++    const fy = +from.slice(0, 4), fm = +from.slice(5, 7);
++    const log = entries || [];
++    for (let k = 0; k < 24; k++) {
++      const yy = fy + Math.floor((fm - 1 + k) / 12);
++      const mm = (fm - 1 + k) % 12 + 1;
++      const lastDay = new Date(yy, mm, 0).getDate();
++      const dd = Math.min(day, lastDay);
++      const cand = yy + '-' + String(mm).padStart(2, '0') + '-' + String(dd).padStart(2, '0');
++      if (cand < from) continue;
++      if (log.some(e => e.date.slice(0, 7) === cand.slice(0, 7))) continue;
++      return cand;
++    }
++    return null;
++  },
++
++  createPlan(plan) {
++    this.load();
++    const v = this.validatePlan(plan);
++    if (v.error) return { ok: false, error: v.error };
++    if (this.planFor(v.plan.code)) return { ok: false, error: '该基金已有定投计划' };
++    // 基线 = 建计划这一刻的持仓（没有持仓就是 0）
++    const h = S.holdings.find(x => x.code === v.plan.code);
++    v.plan.baseShares = h ? Math.max(0, +h.shares || 0) : 0;
++    v.plan.baseCostNav = h ? Math.max(0, +h.costNav || 0) : 0;
++    this.plans.push(v.plan);
++    this.save();
++    return { ok: true, plan: v.plan };
++  },
++
++  updatePlan(code, patch) {
++    this.load();
++    const plan = this.planFor(code);
++    if (!plan) return { ok: false, error: '计划不存在' };
++    const merged = Object.assign({}, plan, patch, { code });
++    const v = this.validatePlan(merged);
++    if (v.error) return { ok: false, error: v.error };
++    // 基线是建计划时定的，编辑不改基线
++    v.plan.baseShares = plan.baseShares;
++    v.plan.baseCostNav = plan.baseCostNav;
++    Object.assign(plan, v.plan);
++    this.save();
++    return { ok: true, plan };
++  },
++
++  deletePlan(code) {
++    this.load();
++    this.plans = this.plans.filter(p => p.code !== code);
++    delete this.log[code];
++    this.save();
++    // 持仓不动：保留最后一次推导出的份额与均价
++  },
++
++  addPurchase(code, entry) {
++    this.load();
++    const plan = this.planFor(code);
++    if (!plan) return { ok: false, error: '计划不存在' };
++    const v = this.validateEntry(entry);
++    if (v.error) return { ok: false, error: v.error };
++    if (v.entry.date > todayStr()) return { ok: false, error: '不能记未来的购买' };
++    if (!this.log[code]) this.log[code] = [];
++    this.log[code].push(v.entry);
++    this.log[code].sort((a, b) => a.date < b.date ? -1 : 1);
++    this.applyToHolding(code);
++    this.save();
++    return { ok: true, entry: v.entry };
++  },
++
++  deletePurchase(code, idx) {
++    this.load();
++    const arr = this.log[code];
++    if (!arr || idx < 0 || idx >= arr.length) return { ok: false, error: '记录不存在' };
++    arr.splice(idx, 1);
++    if (!arr.length) delete this.log[code];
++    this.applyToHolding(code);
++    this.save();
++    return { ok: true };
++  },
++
++  /**
++   * 核心不变量落盘：把推导出的份额/均价写回持仓，并同步 txLog。
++   * 基金还没持仓且推导出份额 > 0 时建一条持仓（基线为 0 的新定投
++   * 记第一笔后就是这种情况）。
++   */
++  applyToHolding(code) {
++    this.load();
++    const plan = this.planFor(code);
++    if (!plan) return false;
++    const d = this.derive(plan, this.logFor(code));
++    let h = S.holdings.find(x => x.code === code);
++    if (!h) {
++      if (!(d.shares > 0)) return false;
++      h = { code, name: plan.name || code, shares: 0, costNav: 0, group: '默认', divMode: 'cash', buyDate: plan.startDate || null, addedAt: todayStr() };
++      S.holdings.push(h);
++    }
++    h.shares = d.shares;
++    h.costNav = d.costNav;
++    this.syncTxLog(code);
++    store.save();
++    return true;
++  },
++
++  /**
++   * 按「基线 + 购买记录」重建该基金的 txLog 快照。
++   * 保留基线日之前的快照（建计划前的持仓历史），只重建基线日
++   * 及之后的快照——所以删一笔、补登一笔旧的，都能正确重算。
++   * 基线日 = 开始日与第一笔购买日中较早的一天（允许补登开始日
++   * 之前的购买，比如 11-13 买的、11-14 才建计划）。
++   */
++  syncTxLog(code) {
++    const plan = this.planFor(code);
++    if (!plan) return;
++    const entries = this.logFor(code);
++    const firstDate = entries.length ? entries[0].date : null;
++    const baseDate = (plan.startDate && firstDate)
++      ? (plan.startDate < firstDate ? plan.startDate : firstDate)
++      : (plan.startDate || firstDate || todayStr());
++    const derived = [];
++    if (plan.baseShares > 0) derived.push({ d: baseDate, s: plan.baseShares });
++    let cum = plan.baseShares;
++    for (const e of entries) {
++      cum += (+e.shares || 0);
++      const last = derived[derived.length - 1];
++      if (last && last.d === e.date) last.s = cum;
++      else derived.push({ d: e.date, s: cum });
++    }
++    const data = txLog.load();
++    const arr = (data[code] || []).filter(it => it.d < baseDate);
++    for (const it of derived) {
++      let i = 0;
++      while (i < arr.length && arr[i].d < it.d) i++;
++      if (i < arr.length && arr[i].d === it.d) arr[i].s = it.s;
++      else arr.splice(i, 0, { d: it.d, s: it.s });
++    }
++    data[code] = arr;
++    txLog.save();
++  },
++
++  /**
++   * 定投统计（给列表页用）：推导值 + 持仓算出的市值/收益。
++   * 没有持仓时市值与收益是 0（还没买进）。
++   */
++  stats(code) {
++    const plan = this.planFor(code);
++    if (!plan) return null;
++    const entries = this.logFor(code);
++    const d = this.derive(plan, entries);
++    const h = S.holdings.find(x => x.code === code);
++    let value = 0, profit = 0, profitPct = 0, curNav = 0;
++    if (h) {
++      const c = holdCalc(h);
++      value = c.value; profit = c.profit; profitPct = c.profitPct; curNav = c.nav;
++    }
++    return {
++      plan, entries,
++      shares: d.shares, costNav: d.costNav,
++      invested: d.invested, logShares: d.logShares, logAmount: d.logAmount,
++      hasHolding: !!h, value, profit, profitPct, curNav,
++      next: this.nextDate(plan, todayStr(), entries),
++    };
++  },
++
++  /**
++   * 解析导出 JSON 里的定投部分（给批量导入用）。
++   * 没有定投数据返回 null；有则返回清洗后的 {plans, log, logCount, errors}。
++   * 没有对应计划的购买记录会被忽略（写进 errors）。
++   */
++  parseExport(j) {
++    if (!j || typeof j !== 'object') return null;
++    const hasPlans = Array.isArray(j.dcaPlans);
++    const hasLog = j.dcaLog && typeof j.dcaLog === 'object' && !Array.isArray(j.dcaLog);
++    if (!hasPlans && !hasLog) return null;
++    const plans = [], errors = [];
++    (j.dcaPlans || []).forEach((p, i) => {
++      const v = this.validatePlan(p);
++      if (v.error) errors.push('定投计划第 ' + (i + 1) + ' 条：' + v.error);
++      else if (plans.some(x => x.code === v.plan.code)) errors.push('定投计划第 ' + (i + 1) + ' 条：' + v.plan.code + ' 重复');
++      else plans.push(v.plan);
++    });
++    const planCodes = new Set(plans.map(p => p.code));
++    const log = {};
++    let logCount = 0;
++    Object.keys(j.dcaLog || {}).forEach(code => {
++      const arr = j.dcaLog[code];
++      if (!Array.isArray(arr)) { errors.push('定投记录 ' + code + ' 不是数组'); return; }
++      if (!planCodes.has(code)) { errors.push('定投记录 ' + code + ' 没有对应计划，已忽略'); return; }
++      const es = [];
++      arr.forEach((e, i) => {
++        const v = this.validateEntry(e);
++        if (v.error) errors.push('定投记录 ' + code + ' 第 ' + (i + 1) + ' 条：' + v.error);
++        else es.push(v.entry);
++      });
++      es.sort((a, b) => a.date < b.date ? -1 : 1);
++      if (es.length) { log[code] = es; logCount += es.length; }
++    });
++    return { plans, log, logCount, errors };
++  },
++
++  /**
++   * 导入时整批替换定投数据，并把涉及基金的持仓按推导值重算。
++   * 返回导入的计划数与记录数（给导入结果提示用）。
++   */
++  applyImport(dcaData) {
++    if (!dcaData) return { plans: 0, logCount: 0 };
++    this.load();
++    this.plans = dcaData.plans;
++    this.log = dcaData.log;
++    this.save();
++    const affected = new Set(dcaData.plans.map(p => p.code));
++    for (const code of affected) this.applyToHolding(code);
++    return { plans: dcaData.plans.length, logCount: dcaData.logCount };
++  },
++};
++
++/* ---------------- 定投界面 ---------------- */
++
++const dcaEsc = v => String(v == null ? '' : v)
++  .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
++
++/** 设置页「定投管理」那行的副标题：执行中个数 + 最近的下次日期。 */
++function dcaSettingsDesc() {
++  dca.load();
++  if (!dca.plans.length) return '每月定额买入，自动算均价';
++  const act = dca.countActive();
++  const nexts = dca.plans.filter(p => p.active !== false)
++    .map(p => dca.nextDate(p, todayStr(), dca.logFor(p.code)))
++    .filter(Boolean).sort();
++  return act + ' 个执行中' + (nexts.length ? ' · 下次 ' + nexts[0] : '');
++}
++
++/** 定投计划列表（从 设置 → 数据 → 定投管理 进来）。 */
++function openDca() {
++  dca.load();
++  const cards = dca.plans.map(p => {
++    const st = dca.stats(p.code);
++    const paused = p.active === false;
++    const nextTxt = st.next || (paused ? '已暂停' : '—');
++    const valueTxt = st.hasHolding ? '¥' + moneyFull0(st.value) : '--';
++    const profitTxt = st.hasHolding
++      ? moneyFull(st.profit) + '（' + pctTxt(st.profitPct) + '）'
++      : '--';
++    return '<div class="pcard" style="padding:14px;margin-bottom:10px">'
++      + '<div style="display:flex;justify-content:space-between;align-items:baseline">'
++      + '<div><b>' + dcaEsc(p.name) + '</b> <span class="t-dim t-sm">' + p.code + '</span></div>'
++      + '<span class="t-sm"' + (paused ? ' style="color:var(--dim)"' : '') + '>' + (paused ? '已暂停' : '执行中') + '</span>'
++      + '</div>'
++      + '<div class="kv"><span class="k">每月</span><span class="v">' + p.day + ' 日 · ' + fmt(p.amount, 0) + ' 元</span></div>'
++      + '<div class="kv"><span class="k">下次</span><span class="v">' + nextTxt + '</span></div>'
++      + '<div class="kv"><span class="k">累计投入</span><span class="v">¥' + moneyFull0(st.invested) + '（已买 ' + st.entries.length + ' 笔）</span></div>'
++      + '<div class="kv"><span class="k">总份额 / 均价</span><span class="v">' + fmt(st.shares, 2) + ' 份 · ' + (st.shares > 0 ? fmt(st.costNav, 4) : '--') + '</span></div>'
++      + '<div class="kv"><span class="k">当前市值 / 收益</span><span class="v">' + valueTxt + ' / ' + profitTxt + '</span></div>'
++      + '<div style="display:flex;gap:6px;margin-top:10px">'
++      + '<button class="btn primary" style="flex:1" onclick="openDcaBuy(\'' + p.code + '\')">记一笔</button>'
++      + '<button class="btn" style="flex:1" onclick="openDcaLog(\'' + p.code + '\')">记录</button>'
++      + '<button class="btn" style="flex:1" onclick="dcaTogglePlan(\'' + p.code + '\')">' + (paused ? '恢复' : '暂停') + '</button>'
++      + '<button class="btn" style="flex:1" onclick="openDcaPlanForm(\'' + p.code + '\')">编辑</button>'
++      + '</div>'
++      + '<div style="margin-top:8px;text-align:right"><span class="t-xs t-dim" style="cursor:pointer" onclick="dcaDeletePlan(\'' + p.code + '\')">删除计划</span></div>'
++      + '</div>';
++  }).join('');
++  openSheet(
++    '<div class="sheet-x" onclick="closeSheet()">✕</div>'
++    + '<div class="sheet-h">定投管理</div>'
++    + '<div class="sheet-body">'
++    + (cards || '<div class="t-dim t-sm" style="padding:12px 0">还没有定投计划。每月固定一天买固定金额，记一笔就自动算好份额与均价。</div>')
++    + '<button class="btn primary" onclick="openDcaPlanForm()">新建定投计划</button>'
++    + '<div class="t-xs t-dim" style="margin-top:10px">份额与均价由购买记录自动推导；要改数请改购买记录，不要直接改持仓（会被下一次记账覆盖）。不发提醒，只显示下次日期。</div>'
++    + '</div>'
++  );
++}
++
++/** 新建 / 编辑定投计划。code 为空时新建。 */
++function openDcaPlanForm(code) {
++  const plan = code ? dca.planFor(code) : null;
++  const isEdit = !!plan;
++  const t = todayStr();
++  openSheet(`
++    <div class="sheet-x" onclick="closeSheet()">✕</div>
++    <div class="sheet-h">${isEdit ? '编辑定投计划' : '新建定投计划'}</div>
++    <div class="sheet-body">
++    ${isEdit
++      ? `<div class="kv"><span class="k">基金</span><span class="v">${dcaEsc(plan.name)} · ${plan.code}</span></div>`
++      : `<div class="field"><label>基金代码（6 位）</label>
++        <input id="dcaCode" inputmode="numeric" maxlength="6" placeholder="如 007466"></div>`}
++    <div class="field"><label>每期金额（元）</label>
++      <input id="dcaAmount" type="number" inputmode="decimal" placeholder="如 1000"
++        value="${isEdit ? plan.amount : ''}"></div>
++    <div class="field"><label>每月几号</label>
++      <input id="dcaDay" type="number" inputmode="numeric" placeholder="1-31，如 15"
++        value="${isEdit ? plan.day : ''}"></div>
++    <div class="field"><label>开始日期</label>
++      <input id="dcaStart" type="date" value="${isEdit ? plan.startDate : t}"></div>
++    ${isEdit ? `<div class="field"><label>状态</label>
++      <div class="sectabs" style="margin:0">
++        <button type="button" data-active="1" class="${plan.active !== false ? 'on' : ''}" style="flex:1">执行中</button>
++        <button type="button" data-active="0" class="${plan.active === false ? 'on' : ''}" style="flex:1">已暂停</button>
++      </div></div>` : ''}
++    ${isEdit && plan.baseShares > 0
++      ? `<div class="t-sm t-dim" style="margin:-4px 0 12px">基线：建计划时持有 ${fmt(plan.baseShares, 2)} 份，均价 ${fmt(plan.baseCostNav, 4)}（建计划时定的，编辑不改）。</div>`
++      : ''}
++    <button class="btn primary" id="dcaPlanOk">保存</button>
++    <button class="btn" onclick="closeSheet()">取消</button>
++    </div>
++  `);
++
++  // 状态切换（编辑时才有）
++  let active = plan ? plan.active !== false : true;
++  const box = document.getElementById('sheet');
++  box.querySelectorAll('[data-active]').forEach(b => {
++    b.onclick = () => {
++      box.querySelectorAll('[data-active]').forEach(x => x.classList.remove('on'));
++      b.classList.add('on');
++      active = b.dataset.active === '1';
++    };
++  });
++
++  document.getElementById('dcaPlanOk').onclick = async () => {
++    const amount = parseFloat(document.getElementById('dcaAmount').value);
++    const day = parseInt(document.getElementById('dcaDay').value, 10);
++    const startDate = document.getElementById('dcaStart').value || todayStr();
++    if (isEdit) {
++      const r = dca.updatePlan(code, { amount, day, startDate, active });
++      if (!r.ok) { toast(r.error); return; }
++      closeSheet(); render(); toast('已保存'); openDca();
++      return;
++    }
++    const codeVal = document.getElementById('dcaCode').value.trim();
++    if (!/^\d{6}$/.test(codeVal)) { toast('基金代码应为 6 位数字'); return; }
++    // 查名字（和批量导入同一套）；查不到就用代码当名字
++    let name = codeVal;
++    try {
++      const found = (await api.search(codeVal)).find(o => o.code === codeVal);
++      if (found) name = found.name;
++    } catch (e) { /* ignore */ }
++    const r = dca.createPlan({ code: codeVal, name, amount, day, startDate, active: true });
++    if (!r.ok) { toast(r.error); return; }
++    closeSheet(); render(); toast('定投计划已创建'); openDca();
++  };
++}
++
++/** 给一个计划记一笔购买。净值默认取当日最新净值，份额自动算出，都可改。 */
++function openDcaBuy(code) {
++  const plan = dca.planFor(code);
++  if (!plan) { toast('计划不存在'); return; }
++  const t = todayStr();
++  const pair = navPairOf(code);
++  const curNav = pair && isFinite(pair.curNav) && pair.curNav > 0 ? pair.curNav : null;
++  openSheet(`
++    <div class="sheet-x" onclick="closeSheet()">✕</div>
++    <div class="sheet-h">记一笔 · ${dcaEsc(plan.name)}</div>
++    <div class="sheet-body">
++    <div class="field"><label>购买日期</label>
++      <input id="dcaBuyDate" type="date" value="${t}"></div>
++    <div class="field"><label>实付金额（元）</label>
++      <input id="dcaBuyAmount" type="number" inputmode="decimal"
++        value="${plan.amount}" placeholder="如 1000"></div>
++    <div class="field"><label>当日净值</label>
++      <input id="dcaBuyNav" type="number" inputmode="decimal"
++        value="${curNav != null ? curNav : ''}" placeholder="如 1.2345"></div>
++    <div class="field"><label>到账份额（自动算出，可改）</label>
++      <input id="dcaBuyShares" type="number" inputmode="decimal" placeholder="金额 ÷ 净值"></div>
++    <div class="t-xs t-dim" style="margin:-4px 0 12px">平台扣了手续费就按实到份额改，份额与均价按实到算。</div>
++    <button class="btn primary" id="dcaBuyOk">保存</button>
++    <button class="btn" onclick="closeSheet()">取消</button>
++    </div>
++  `);
++
++  // 金额或净值一改，份额就重算（手动改完份额再动金额/净值会覆盖一次）
++  const amtEl = document.getElementById('dcaBuyAmount');
++  const navEl = document.getElementById('dcaBuyNav');
++  const shEl = document.getElementById('dcaBuyShares');
++  const calc = () => {
++    const a = parseFloat(amtEl.value), n = parseFloat(navEl.value);
++    if (a > 0 && n > 0) shEl.value = (Math.round(a / n * 100) / 100).toFixed(2);
++  };
++  amtEl.oninput = calc;
++  navEl.oninput = calc;
++  calc();
++
++  document.getElementById('dcaBuyOk').onclick = async () => {
++    const date = document.getElementById('dcaBuyDate').value || todayStr();
++    const amount = parseFloat(amtEl.value);
++    const nav = parseFloat(navEl.value);
++    const shares = parseFloat(shEl.value);
++    const r = dca.addPurchase(code, { date, amount, nav, shares });
++    if (!r.ok) { toast(r.error); return; }
++    closeSheet();
++    await refreshNav();
++    render();
++    toast('已记一笔');
++    openDca();
++  };
++}
++
++/** 一个计划的购买记录（最新在前），可删。 */
++function openDcaLog(code) {
++  const plan = dca.planFor(code);
++  if (!plan) { toast('计划不存在'); return; }
++  const entries = dca.logFor(code);
++  const rows = entries.map((e, i) => ({ e, i })).reverse().map(({ e, i }) =>
++    '<div class="kv"><span class="k">' + e.date + ' · ¥' + moneyFull0(e.amount) + ' @ ' + fmt(e.nav, 4) + '</span>'
++    + '<span class="v">' + fmt(e.shares, 2) + ' 份 <span class="t-xs t-dim" style="cursor:pointer" onclick="dcaDeleteLog(\'' + code + '\',' + i + ')">删除</span></span></div>'
++  ).join('');
++  const baseTxt = plan.baseShares > 0
++    ? '<div class="t-sm t-dim" style="margin-bottom:8px">基线：建计划时持有 ' + fmt(plan.baseShares, 2) + ' 份，均价 ' + fmt(plan.baseCostNav, 4) + '</div>'
++    : '';
++  openSheet(
++    '<div class="sheet-x" onclick="closeSheet()">✕</div>'
++    + '<div class="sheet-h">购买记录 · ' + dcaEsc(plan.name) + '</div>'
++    + '<div class="sheet-body">'
++    + baseTxt
++    + (rows || '<div class="t-dim t-sm" style="padding:12px 0">还没有购买记录。</div>')
++    + '<button class="btn primary" onclick="openDcaBuy(\'' + code + '\')">记一笔</button>'
++    + '<div class="t-xs t-dim" style="margin-top:10px">删掉一笔后，持仓按剩余记录重算。</div>'
++    + '</div>'
++  );
++}
++
++/** 删除一条购买记录（重算持仓）。idx 是 dcaLog 里的原始下标。 */
++function dcaDeleteLog(code, idx) {
++  if (!confirm('删除这笔购买记录？持仓会按剩余记录重算。')) return;
++  const r = dca.deletePurchase(code, idx);
++  if (!r.ok) { toast(r.error); return; }
++  refreshNav(); render();
++  openDcaLog(code);
++  toast('已删除，持仓已重算');
++}
++
++/** 暂停 / 恢复一个计划。 */
++function dcaTogglePlan(code) {
++  const plan = dca.planFor(code);
++  if (!plan) return;
++  dca.updatePlan(code, { active: plan.active === false });
++  render();
++  openDca();
++  toast(plan.active === false ? '已恢复执行' : '已暂停');
++}
++
++/** 删除一个计划（购买记录一起删，持仓保留当前份额与均价）。 */
++function dcaDeletePlan(code) {
++  const plan = dca.planFor(code);
++  if (!plan) return;
++  if (!confirm('删除定投计划「' + plan.name + '」？购买记录会一起删除，持仓保留当前份额与均价。')) return;
++  dca.deletePlan(code);
++  render();
++  openDca();
++  toast('计划已删除');
++}
++
  /* ---------------- 持仓操作菜单 ---------------- */
  
  /** 长按持仓弹出的操作面板。 */
-@@ -11835,8 +13045,12 @@ function openEditForm(h) {
+@@ -11835,8 +13664,12 @@ function openEditForm(h) {
    setInterval(() => {
      if (document.hidden) return;
      if (!isTradingNow()) return;
@@ -3758,11 +5065,11 @@ index 40f6d36..1a8d6fa 100644
    }, 30000);
  
 diff --git a/src/ORIGIN_SHA256.txt b/src/ORIGIN_SHA256.txt
-index 2cc4663..a471bcf 100644
+index 2cc4663..32d82f4 100644
 --- a/src/ORIGIN_SHA256.txt
 +++ b/src/ORIGIN_SHA256.txt
 @@ -1 +1 @@
 -6ed562f7b4b5ff09e68445cf12bb5e56756d8d9bb291f72a394f2aac7b388ce4
 \ No newline at end of file
-+fd9e1ad9a6da43ab0bb14b7543235294f220f23caa601cdd1d71666913111b21
++2757135cb9b2d944f26c8d957e55514a1fb041e1afeeb5632120b499e5942862
 \ No newline at end of file
